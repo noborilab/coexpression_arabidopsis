@@ -123,17 +123,27 @@ if (n_unmapped > 0 && n_unmapped <= 20) {
           paste(head(sym_rn[is.na(map_idx)], 20), collapse = ", "))
 }
 
-# Build final gene_id and gene_symbol vectors; drop unmapped
-gene_id_all  <- rn
-sym_all      <- rep(NA_character_, length(rn))
+# Build final gene_id and gene_symbol vectors; drop unmapped.
+# Use explicit integer indexing — double-subset assignment (x[a][b] <- v) does
+# NOT write back to x in R, and OR-ing vectors of different lengths triggers
+# silent recycling. Both are avoided here.
+gene_id_all <- rn
+sym_all     <- rep(NA_character_, length(rn))
 
-gene_id_all[!is_at_id][!is.na(map_idx)] <- symbol_map$gene_id[map_idx[!is.na(map_idx)]]
-sym_all[!is_at_id]                       <- sym_rn
+sym_row_idx    <- which(!is_at_id)           # integer indices of symbol rows
+mapped_sub_idx <- which(!is.na(map_idx))      # which of those were mapped
 
-keep_genes   <- is_at_id | !is.na(map_idx)
-counts       <- counts[keep_genes, , drop = FALSE]
-gene_id_all  <- gene_id_all[keep_genes]
-sym_all      <- sym_all[keep_genes]
+gene_id_all[sym_row_idx[mapped_sub_idx]] <-
+  symbol_map$gene_id[map_idx[mapped_sub_idx]]
+sym_all[sym_row_idx] <- sym_rn
+
+keep_genes <- logical(length(rn))
+keep_genes[is_at_id]                      <- TRUE   # all AT-IDs pass
+keep_genes[sym_row_idx[mapped_sub_idx]]   <- TRUE   # mapped symbols pass
+
+counts      <- counts[keep_genes, , drop = FALSE]
+gene_id_all <- gene_id_all[keep_genes]
+sym_all     <- sym_all[keep_genes]
 rownames(counts) <- gene_id_all
 
 gene_meta <- data.frame(
