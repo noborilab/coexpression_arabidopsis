@@ -1,0 +1,21 @@
+Package: CoexprArabidopsis
+Title: Extended Gene Coexpression Analysis Pipeline
+Version: 0.0.0.9000
+Authors@R:
+    person("Tatsuya", "Nobori", , "tatsuyanobori@gmail.com", role = c("aut", "cre"))
+Description: Takes any preprocessed 10x single-cell/single-nucleus dataset
+    (currently Seurat objects) and produces context-robust co-expression modules
+    with biological interpretation, plus a gene-of-interest (GOI) lookup resource.
+    Supports two first-class estimation modes (pseudobulk and SingleCellGGM) with
+    an optional cross-context robustness layer.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    optparse,
+    yaml
+Suggests:
+    testthat (>= 3.0.0),
+    Seurat
+Config/testthat/edition: 3

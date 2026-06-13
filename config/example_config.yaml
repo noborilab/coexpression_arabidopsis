@@ -1,0 +1,95 @@
+# Extended Gene Coexpression Analysis Pipeline — Example Configuration
+# -----------------------------------------------------------------------
+# Copy this file and fill in real paths/values before running.
+# Lines beginning with '#' are comments; they are ignored by the parser.
+#
+# Usage:
+#   cp config/example_config.yaml config/my_config.yaml
+#   # edit my_config.yaml
+#   Rscript inst/scripts/run_pipeline.R --config config/my_config.yaml
+
+# ---------------------------------------------------------------------------
+# Input dataset
+# ---------------------------------------------------------------------------
+input:
+  path: "/path/to/your/seurat_object.rds"  # Path to .rds file holding a Seurat object
+  dataset_id: "lee2025_dev_atlas"           # Short identifier — used in output filenames
+  assay: "RNA"                              # Seurat assay to extract counts from
+
+# ---------------------------------------------------------------------------
+# Stratum / context specification
+# ---------------------------------------------------------------------------
+# These metadata columns define the "contexts" within which networks are
+# estimated independently. Each unique combination of values → one network.
+stratum:
+  variables:
+    - "organ"      # e.g. root, leaf, flower, seed, silique
+    # - "condition"  # e.g. mock, DC3000, AvrRpt2 — add or remove as needed
+    # - "timepoint"  # e.g. 6d, 9d, 15d
+
+  # Optional: restrict to specific levels (default: all levels are used)
+  # filter:
+  #   organ: ["root", "leaf"]
+  #   condition: ["mock", "DC3000"]
+
+# ---------------------------------------------------------------------------
+# Cell grouping for pseudobulk aggregation
+# (only used when estimation.mode = "pseudobulk")
+# ---------------------------------------------------------------------------
+pseudobulk:
+  group_by: "sample"  # Column used to aggregate cells into pseudobulk replicates
+  min_cells: 10        # Groups with fewer cells than this are dropped
+
+# ---------------------------------------------------------------------------
+# Estimation mode
+# ---------------------------------------------------------------------------
+estimation:
+  # "pseudobulk"     — aggregate to pseudobulk replicates, then estimate a
+  #                    marginal Spearman correlation network per stratum
+  # "singlecellggm"  — estimate a graphical Gaussian model (partial correlation)
+  #                    directly from single-cell counts (SingleCellGGM method)
+  mode: "pseudobulk"
+
+# ---------------------------------------------------------------------------
+# Robustness layer (optional)
+# ---------------------------------------------------------------------------
+# Only meaningful when the input has multiple independent strata.
+# Set enabled: false if your dataset has few strata or you want to skip this step.
+robustness:
+  enabled: true
+  methods:
+    - "r_score"       # Cross-stratum weighted indicator aggregation (R_score)
+    # - "replication" # Cross-dataset replication (requires external_datasets below)
+
+  # External datasets for replication testing (optional)
+  # external_datasets:
+  #   - path: "/path/to/external_seurat.rds"
+  #     dataset_id: "external_2025"
+
+# ---------------------------------------------------------------------------
+# Gene-of-interest (GOI) lookup resource
+# ---------------------------------------------------------------------------
+goi:
+  path: "/path/to/goi_list.txt"  # One AGI gene ID per line (e.g. AT1G01010)
+
+  # Optional: named gene sets for enrichment / context annotation
+  # gene_sets:
+  #   defense:  "/path/to/defense_genes.txt"
+  #   hormone:  "/path/to/hormone_genes.txt"
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  dir: "./results"   # Output directory (created if it does not exist)
+  prefix: "coexpr"   # Filename prefix for all output files
+
+# ---------------------------------------------------------------------------
+# Plugins (swappable domain-specific resources)
+# ---------------------------------------------------------------------------
+# All domain-specific gene lists are referenced by path here, never hardcoded
+# in the package. Point these to files in your plugins/ directory.
+#
+# plugins:
+#   tf_list: "plugins/Athaliana_motifs_metadata.tsv"  # TF list (673 TFs, col: motif_id)
+#   curated_anchors: "plugins/curated_anchors.rds"    # Curated gene-set anchors

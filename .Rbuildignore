@@ -1,0 +1,7 @@
+^config$
+^docs$
+^plugins$
+^\.github$
+^README\.md$
+^\.gitignore$
+^coexpr pipeline background\.md$

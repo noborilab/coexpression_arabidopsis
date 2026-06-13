@@ -1,0 +1,23 @@
+# R
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Rproj.user/
+
+# Roxygen / build artifacts
+/doc/
+/Meta/
+inst/doc/
+
+# Test artifacts
+tests/testthat/Rplots.pdf
+
+# Large outputs and real data (never commit)
+results/
+*.rds
+*.rda
+
+# OS
+.DS_Store
+Thumbs.db
