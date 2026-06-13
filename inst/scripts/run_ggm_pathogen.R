@@ -26,7 +26,7 @@ suppressPackageStartupMessages({
 #           the full run after the timing probe confirms runtime is acceptable.
 # --------------------------------------------------------------------------
 
-CONDITIONS <- c("Mock")   # timing probe: one condition first
+CONDITIONS <- c("Mock", "DC3000", "AvrRpt2", "AvrRpm1")   # full run
 
 SEURAT_PATH <- "/Users/jep23kod/Nobori Lab (TSL) Dropbox/Tatsuya NOBORI/SALK_clowd/Projects/SA_PTI_ETI_single_cell/SA_039_94_multiome_revision_rep2_9h_only/out/_seurat_object/motifFixed/combined_filtered.rds"
 
