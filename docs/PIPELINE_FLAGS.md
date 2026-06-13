@@ -6,12 +6,16 @@ interpretation. Update each flag's Status line as work progresses.
 ---
 
 ## FLAG-01: n_iter default
-**Phase**: 1
+**Phase**: 1 → corrected Phase 2c
 **Issue**: The casual pathogen GGM run used ~20,000 iterations (formula-driven).
-Pipeline spec sets n_iter = 100 (SingleCellGGM paper default).
-**Decision**: Keep 100. The min-pcor aggregation converges well below 20k.
-Verify convergence when Mock condition runs first in the rerun.
-**Status**: Decided — no action needed in Phase 2.
+Pipeline spec originally set n_iter = 100, misreading the paper: 100 is the
+average number of times each GENE PAIR is sampled, not the total iteration count.
+With n_iter = 100 on a real gene universe (p ~ 16k), most pairs are never sampled.
+**Decision**: CORRECTED. n_iter = NULL (auto) computes round(p*(p-1)/39980) per
+stratum so each pair is sampled ~100x on average. For p = 16k this gives ~6,400
+iterations. The formula is implemented in estimate_singlecellggm.R.
+**Status**: CORRECTED in Phase 2c. See estimate_singlecellggm.R: resolved_n_iter
+block in the per-stratum loop.
 
 ---
 
@@ -87,3 +91,36 @@ atlas are archived off-machine.
 **Decision**: Not blocking Phase 2a-2c. Revisit when pseudobulk mode is wired to
 the dev atlas.
 **Status**: Open.
+
+---
+
+## FLAG-09: min_cells / coex_cutoff semantics
+**Phase**: 2b → corrected Phase 2c
+**Issue**: The Phase 2b spec and the original implementation conflated two distinct
+quantities under the name `min_cells`:
+- (a) number of *iterations* in which a gene pair was sampled (sampling count)
+- (b) number of *cells* in which both genes are co-detected (count > 0 in same cell)
+The original code filtered on (a), using the iteration count as a proxy for (b).
+These are unrelated: a pair can be sampled in many iterations but co-detected in
+very few cells (or vice versa).
+**Decision**: CORRECTED. The parameter is renamed `coex_cutoff` and now correctly
+filters on the co-detection cell count, computed from a p×p co-detection matrix
+`coex = tcrossprod(counts > 0)` built once per stratum before the iteration loop.
+The sampling count (samp > 0) is kept as a separate filter to exclude never-sampled
+pairs. See estimate_singlecellggm.R: coex matrix construction and the keep_edge
+filter in the post-loop section.
+**Status**: CORRECTED in Phase 2c.
+
+---
+
+## FLAG-10: Sign handling — positive-only vs |pcor| filter
+**Phase**: 2c
+**Issue**: The original implementation retained edges where |pcor| >= pcor_cutoff,
+keeping both positive and negative partial correlations. The SingleCellGGM paper
+(Xu et al. 2024) retains only positive partial correlations (pcor >= cutoff), as
+co-expression networks represent co-activation rather than mutual inhibition.
+**Decision**: Pipeline default `keep_negative = FALSE` matches the paper (positive
+pcor only). A toggle `keep_negative = TRUE` is exposed for users who want signed
+networks or wish to study negative partial correlations. See estimate_singlecellggm.R:
+the keep_edge filter in the post-loop section.
+**Status**: Implemented in Phase 2c.

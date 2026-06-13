@@ -1,56 +1,54 @@
 #' @title SingleCellGGM Network Estimation
 #'
 #' @description
-#' Estimates a gene co-expression network directly from single-cell counts
-#' using the SingleCellGGM method (Xu, Wang & Ma 2024, Cell Reports Methods 4:100813).
-#'
-#' Algorithm: iterative random subsampling of genes; takes the **minimum** |pcor|
-#' across iterations as the conservative final estimate; retains edges with
-#' |pcor| >= pcor_cutoff that appeared in >= min_cells iterations.
-#'
-#' Partial correlation removes indirect edges and partially absorbs the
-#' tissue-identity confound by conditioning on other genes. The fundamental
-#' paracrine limitation for ligand-receptor pair discovery remains.
+#' Faithful-in-structure reimplementation of Xu, Wang & Ma (2024)
+#' Cell Reports Methods 4:100813. Covariance is computed once per stratum;
+#' each iteration inverts a 2000-gene submatrix and updates the running
+#' minimum |pcor| per pair.
 #'
 #' @name estimate_singlecellggm
 NULL
 
-# Fallback partial correlation via MASS::ginv when corpcor is unavailable.
-.pcor_ginv <- function(mat) {
-  S   <- cov(mat)
-  Pi  <- MASS::ginv(S)
-  d   <- sqrt(diag(Pi))
-  pco <- -Pi / outer(d, d)
-  diag(pco) <- 1
-  pco
-}
-
 #' SingleCellGGM co-expression estimation
 #'
-#' @param bundle      InputBundle from load_seurat().
-#' @param n_iter      Number of subsampling iterations. Default 100.
-#' @param subsample   Genes per subsample iteration. Default 2000.
-#' @param pcor_cutoff Minimum |pcor| to retain an edge. Default 0.02.
-#' @param min_cells   Minimum number of iterations in which a pair must appear.
-#'   In the original paper this maps to cells; here it maps to iteration count.
-#'   Default 10.
-#' @param seed        Random seed. Default 98.
+#' Faithful-in-structure reimplementation of Xu, Wang & Ma (2024)
+#' Cell Reports Methods 4:100813 (original MATLAB:
+#' github.com/MaShisongLab/SingleCellGGM). Covariance is computed once per
+#' stratum; each iteration inverts a 2000-gene submatrix and updates the running
+#' minimum |pcor| per pair.
+#'
+#' @param bundle       InputBundle from load_seurat()
+#' @param n_iter       Number of subsampling iterations. NULL (default) =
+#'                     auto-compute as round(p*(p-1)/39980) per stratum, so each
+#'                     pair is sampled ~100x on average. Only override for testing.
+#' @param subsample    Genes per iteration. Default 2000.
+#' @param pcor_cutoff  Minimum pcor to retain an edge. Default 0.02.
+#' @param coex_cutoff  Minimum number of cells co-detecting both genes. Default 10.
+#' @param keep_negative If FALSE (default, matches paper), retain only positive
+#'                     partial correlations >= pcor_cutoff. If TRUE, retain edges
+#'                     with |pcor| >= pcor_cutoff (signed weight kept).
+#' @param ridge        Small value added to covariance submatrix diagonal for
+#'                     numerical stability. Default 1e-6.
+#' @param seed         Random seed. Default 98.
 #' @return Named list of NetworkResult, one per stratum level.
 #' @export
 estimate_singlecellggm <- function(bundle,
-                                   n_iter      = 100,
-                                   subsample   = 2000,
-                                   pcor_cutoff = 0.02,
-                                   min_cells   = 10,
-                                   seed        = 98) {
-  use_corpcor <- requireNamespace("corpcor", quietly = TRUE)
-  if (!use_corpcor) {
-    warning("Package 'corpcor' not available; using MASS::ginv fallback. ",
-            "Install corpcor for shrinkage-based partial correlation.")
-    if (!requireNamespace("MASS", quietly = TRUE)) {
-      stop("Neither 'corpcor' nor 'MASS' is available. ",
-           "Install corpcor (recommended) or MASS.")
-    }
+                                   n_iter        = NULL,
+                                   subsample     = 2000,
+                                   pcor_cutoff   = 0.02,
+                                   coex_cutoff   = 10,
+                                   keep_negative = FALSE,
+                                   ridge         = 1e-6,
+                                   seed          = 98) {
+
+  # Warn if reference BLAS detected — performance only, not an error
+  blas_lib <- tryCatch(La_library(), error = function(e) "")
+  if (nchar(blas_lib) > 0 &&
+      !grepl("Accelerate|openblas|mkl|libmkl|blis|atlas|flexiblas",
+             blas_lib, ignore.case = TRUE)) {
+    message("NOTE: BLAS library (", blas_lib, ") does not appear to be an ",
+            "optimised implementation (Accelerate on macOS, OpenBLAS/MKL on Linux). ",
+            "The chol2inv() calls will be ~10x slower. Consider relinking R.")
   }
 
   strat_var <- bundle$stratum_spec$variable
@@ -62,119 +60,171 @@ estimate_singlecellggm <- function(bundle,
 
   for (level in levels_) {
     idx      <- cell_meta[[strat_var]] == level
-    counts_s <- counts[, idx, drop = FALSE]
+    counts_s <- counts[, idx, drop = FALSE]   # genes x cells
     n_cells  <- ncol(counts_s)
-    n_genes  <- nrow(counts_s)
-    gene_ids <- rownames(counts_s)
-    sub_size <- min(subsample, n_genes)
 
-    message("SingleCellGGM: stratum '", level, "' — ",
-            n_genes, " genes x ", n_cells, " cells, ",
-            n_iter, " iterations")
-
-    set.seed(seed)
-
-    # Accumulate per-pair observations across iterations.
-    # For large sub_size, do.call(rbind, iter_list) can be memory-intensive
-    # (sub_size choose 2 rows per iteration). At subsample=2000, n_iter=100,
-    # this is ~200M rows; production runs should use data.table or a C++ backend.
-    iter_list <- vector("list", n_iter)
-
-    for (i in seq_len(n_iter)) {
-      if (i %% 10 == 0) message("  GGM iteration ", i, " / ", n_iter)
-
-      gene_sub_idx <- sample(n_genes, sub_size, replace = FALSE)
-      gene_sub     <- gene_ids[gene_sub_idx]
-      # Transpose: corpcor/cov expect observations x variables (cells x genes)
-      mat_sub      <- t(as.matrix(counts_s[gene_sub_idx, , drop = FALSE]))
-
-      pcor_mat <- if (use_corpcor) {
-        tryCatch(
-          as.matrix(corpcor::pcor.shrink(mat_sub, verbose = FALSE)),
-          error = function(e) {
-            warning("corpcor::pcor.shrink failed in iteration ", i,
-                    ": ", conditionMessage(e), ". Using MASS::ginv fallback.")
-            .pcor_ginv(mat_sub)
-          }
-        )
-      } else {
-        .pcor_ginv(mat_sub)
-      }
-
-      ut <- which(upper.tri(pcor_mat), arr.ind = TRUE)
-      iter_list[[i]] <- data.frame(
-        ga   = gene_sub[ut[, 1L]],
-        gb   = gene_sub[ut[, 2L]],
-        pcor = pcor_mat[ut],
-        stringsAsFactors = FALSE
-      )
-    }
-
-    all_pairs <- do.call(rbind, iter_list)
-
-    if (is.null(all_pairs) || nrow(all_pairs) == 0L) {
-      warning("Stratum '", level, "': no pairs accumulated; skipping.")
+    if (n_cells < 2L) {
+      warning("Stratum '", level, "': fewer than 2 cells; skipping.")
       next
     }
 
-    # Canonical ordering: ensure gene_id_A < gene_id_B lexicographically
-    swap <- all_pairs$ga > all_pairs$gb
-    if (any(swap)) {
-      tmp               <- all_pairs$ga[swap]
-      all_pairs$ga[swap] <- all_pairs$gb[swap]
-      all_pairs$gb[swap] <- tmp
+    # Per-stratum gene filtering:
+    #   (a) drop genes detected in < coex_cutoff cells
+    n_det    <- Matrix::rowSums(counts_s != 0)
+    counts_s <- counts_s[n_det >= coex_cutoff, , drop = FALSE]
+
+    #   (b) drop genes with zero variance (break Cholesky)
+    rmu      <- Matrix::rowMeans(counts_s)
+    rsq      <- Matrix::rowMeans(counts_s^2)
+    keep_var <- (rsq - rmu^2) > .Machine$double.eps
+    counts_s <- counts_s[keep_var, , drop = FALSE]
+
+    gene_ids_s <- rownames(counts_s)
+    p          <- nrow(counts_s)
+
+    message("SingleCellGGM: stratum '", level, "' — ",
+            p, " genes (after per-stratum filter) x ", n_cells, " cells")
+
+    if (p < 2L) {
+      warning("Stratum '", level, "': fewer than 2 genes after filtering; skipping.")
+      next
     }
-    all_pairs$abs_pcor <- abs(all_pairs$pcor)
-    all_pairs$key      <- paste(all_pairs$ga, all_pairs$gb, sep = "\x1f")
 
-    # Aggregation: min |pcor| across iterations, signed by mean pcor direction
-    agg_n       <- tapply(all_pairs$abs_pcor, all_pairs$key, length)
-    agg_sum     <- tapply(all_pairs$pcor,     all_pairs$key, sum)
-    agg_min_abs <- tapply(all_pairs$abs_pcor, all_pairs$key, min)
+    # Resolve effective subsample (cap at p)
+    subsample_s <- min(as.integer(subsample), p)
 
-    pair_names   <- names(agg_n)
-    n_app        <- as.integer(agg_n)
-    sum_pcor     <- as.numeric(agg_sum)
-    min_abs_pcor <- as.numeric(agg_min_abs)
-    final_weight <- sign(sum_pcor) * min_abs_pcor
+    # Resolve n_iter
+    if (is.null(n_iter)) {
+      if (subsample_s == p) {
+        # Tiny gene set: one full-coverage iteration
+        resolved_n_iter <- 1L
+        message("  p (", p, ") <= subsample; setting n_iter = 1, subsample = ", p)
+      } else {
+        resolved_n_iter <- max(1L, round(p * (p - 1L) / 39980))
+        message("  auto n_iter = ", resolved_n_iter,
+                " (round(", p, "*(", p - 1L, ")/39980); ~100 samplings per pair)")
+      }
+    } else {
+      resolved_n_iter <- as.integer(n_iter)
+    }
 
-    # Filters: |pcor| >= pcor_cutoff AND appeared in >= min_cells iterations
-    keep <- (min_abs_pcor >= pcor_cutoff) & (n_app >= min_cells)
+    # Precompute cov_all and coex ONCE per stratum
+    # Densify here; the only time all cells are visited
+    counts_dense <- as.matrix(counts_s)
+    rm(counts_s)
 
-    if (!any(keep)) {
+    # Co-detection matrix: coex[i,j] = # cells detecting both gene i and gene j
+    detect <- counts_dense != 0L   # p x n logical
+    coex   <- matrix(as.integer(tcrossprod(detect)), nrow = p,
+                     dimnames = list(gene_ids_s, gene_ids_s))
+    rm(detect)
+
+    # Gene x gene covariance (p x p)
+    # Center per gene: subtract per-gene mean. R's column-major recycling of a
+    # p-vector over a p x n matrix applies row_means[i] to every element in row i.
+    row_means    <- rowMeans(counts_dense)
+    centered     <- counts_dense - row_means
+    rm(counts_dense)
+    cov_all      <- tcrossprod(centered) / (n_cells - 1L)
+    rm(centered)
+    gc()
+
+    # Initialise accumulators
+    pcor_all <- matrix(1.0, nrow = p, ncol = p)  # running min |pcor|, signed
+    samp     <- matrix(0L,  nrow = p, ncol = p)  # pair sampling count
+    set.seed(seed)
+
+    for (i in seq_len(resolved_n_iter)) {
+      if (i %% 1000L == 0L) {
+        message("  GGM iteration ", i, " / ", resolved_n_iter)
+      }
+
+      j <- sample.int(p, subsample_s)
+      S <- cov_all[j, j, drop = FALSE]
+      S <- S + diag(ridge, nrow(S))
+
+      # SPD inverse via Cholesky (~2x faster than solve())
+      ix <- tryCatch(
+        chol2inv(chol(S)),
+        error = function(e) {
+          # Stronger ridge if Cholesky fails (near-singular block)
+          tryCatch(chol2inv(chol(S + diag(1e-4, nrow(S)))),
+                   error = function(e2) NULL)
+        }
+      )
+      if (is.null(ix)) next
+
+      dv       <- 1.0 / sqrt(diag(ix))
+      pc       <- -(ix * outer(dv, dv))
+      diag(pc) <- 1.0
+
+      # Vectorized block min-update — no nested scalar loops
+      sub      <- pcor_all[j, j]
+      upd      <- abs(pc) < abs(sub)
+      sub[upd] <- pc[upd]
+      pcor_all[j, j] <- sub
+      samp[j, j]     <- samp[j, j] + 1L
+    }
+
+    # Zero out pairs never sampled
+    pcor_all[samp == 0L] <- 0.0
+
+    # Build edge table from lower triangle (avoid double-counting)
+    lt        <- which(lower.tri(pcor_all), arr.ind = TRUE)
+    pcor_vals <- pcor_all[lt]
+    coex_vals <- coex[lt]
+    samp_vals <- samp[lt]
+
+    if (keep_negative) {
+      keep_edge <- abs(pcor_vals) >= pcor_cutoff
+    } else {
+      keep_edge <- pcor_vals >= pcor_cutoff   # positive only — matches paper default
+    }
+    keep_edge <- keep_edge & (coex_vals >= as.integer(coex_cutoff)) & (samp_vals > 0L)
+
+    if (!any(keep_edge)) {
       warning("Stratum '", level, "': no pairs pass filters (pcor_cutoff=",
-              pcor_cutoff, ", min_cells=", min_cells, "); returning empty edge_table.")
+              pcor_cutoff, ", coex_cutoff=", coex_cutoff,
+              if (keep_negative) ", keep_negative=TRUE" else ", positive-only",
+              "); returning empty edge_table.")
       edge_table <- data.frame(
-        gene_id_A = character(0),
-        gene_id_B = character(0),
-        weight    = numeric(0),
+        gene_id_A    = character(0),
+        gene_id_B    = character(0),
+        weight       = numeric(0),
+        coex_cells   = integer(0),
+        sampling_num = integer(0),
         stringsAsFactors = FALSE
       )
     } else {
-      kept_names <- pair_names[keep]
-      split_keys <- strsplit(kept_names, "\x1f", fixed = TRUE)
+      lt_keep    <- lt[keep_edge, , drop = FALSE]
+      # lt columns: [,1] = row (larger matrix index), [,2] = col (smaller)
+      # gene_id_A gets the smaller-indexed gene (col), gene_id_B the larger (row)
       edge_table <- data.frame(
-        gene_id_A = vapply(split_keys, `[[`, character(1L), 1L),
-        gene_id_B = vapply(split_keys, `[[`, character(1L), 2L),
-        weight    = final_weight[keep],
+        gene_id_A    = gene_ids_s[lt_keep[, 2L]],
+        gene_id_B    = gene_ids_s[lt_keep[, 1L]],
+        weight       = pcor_vals[keep_edge],
+        coex_cells   = as.integer(coex_vals[keep_edge]),
+        sampling_num = as.integer(samp_vals[keep_edge]),
         stringsAsFactors = FALSE
       )
     }
 
     results[[level]] <- list(
       edge_table = edge_table,
-      gene_ids   = gene_ids,
+      gene_ids   = gene_ids_s,
       stratum_id = level,
       mode       = "singlecellggm",
       params     = list(
-        n_iter      = n_iter,
-        subsample   = subsample,
-        pcor_cutoff = pcor_cutoff,
-        min_cells   = min_cells,
-        seed        = seed,
-        aggregation = "min_abs_pcor_across_iterations",
-        n_cells     = n_cells,
-        n_genes     = n_genes
+        n_iter        = resolved_n_iter,
+        subsample     = subsample_s,
+        pcor_cutoff   = pcor_cutoff,
+        coex_cutoff   = coex_cutoff,
+        keep_negative = keep_negative,
+        ridge         = ridge,
+        seed          = seed,
+        aggregation   = "min_abs_pcor_across_iterations",
+        n_cells       = n_cells,
+        n_genes       = p
       ),
       timestamp = Sys.time()
     )
