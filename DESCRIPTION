@@ -24,5 +24,6 @@ Suggests:
     WGCNA,
     dynamicTreeCut,
     clusterProfiler,
-    org.At.tair.db
+    org.At.tair.db,
+    igraph
 Config/testthat/edition: 3

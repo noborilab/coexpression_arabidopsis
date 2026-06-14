@@ -190,7 +190,7 @@ test_that("output is a named list with the five required InputBundle slots", {
 
   expect_type(result, "list")
   expect_named(result,
-               c("counts", "cell_meta", "gene_meta", "stratum_spec", "dataset_id"),
+               c("counts", "counts_raw", "cell_meta", "gene_meta", "stratum_spec", "dataset_id"),
                ignore.order = TRUE)
   expect_equal(result$dataset_id, "pathogen_multiome")
   expect_s3_class(result$cell_meta, "data.frame")

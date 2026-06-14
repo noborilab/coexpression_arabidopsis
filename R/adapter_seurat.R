@@ -48,6 +48,9 @@ NULL
 #'   \code{gene_symbol} and \code{gene_id} (AT-ID, Araport11). If \code{NULL},
 #'   row names are assumed to be AT-IDs already.
 #' @return An InputBundle (named list; see \code{docs/OUTPUT_SCHEMA.md}).
+#'   Includes \code{$counts_raw} (raw integer counts, same dims as
+#'   \code{$counts}) when the \code{"counts"} slot/layer is available in the
+#'   Seurat object. \code{NULL} with a warning if extraction fails.
 #' @export
 load_seurat <- function(seurat_path,
                         dataset_id,
@@ -76,19 +79,35 @@ load_seurat <- function(seurat_path,
   # works with both v4 and v5 without version-pinning.
   so_ver <- tryCatch(utils::packageVersion("SeuratObject"),
                      error = function(e) package_version("0.0.0"))
-  counts <- tryCatch(
-    if (so_ver >= "5.0.0") {
-      SeuratObject::GetAssayData(obj, assay = assay, layer = slot)
-    } else {
-      SeuratObject::GetAssayData(obj, assay = assay, slot = slot)
-    },
-    error = function(e) {
-      stop("Could not extract slot/layer '", slot, "' from assay '", assay,
-           "': ", conditionMessage(e))
-    }
-  )
+
+  .get_assay_data <- function(slot_name) {
+    tryCatch(
+      if (so_ver >= "5.0.0") {
+        SeuratObject::GetAssayData(obj, assay = assay, layer = slot_name)
+      } else {
+        SeuratObject::GetAssayData(obj, assay = assay, slot = slot_name)
+      },
+      error = function(e) NULL
+    )
+  }
+
+  counts <- .get_assay_data(slot)
   if (is.null(counts) || nrow(counts) == 0) {
-    stop("Slot '", slot, "' in assay '", assay, "' returned an empty matrix.")
+    stop("Slot/layer '", slot, "' in assay '", assay, "' returned an empty matrix.")
+  }
+
+  # Also extract raw counts (integer) for sum-aggregation in observation_points.R.
+  # Tries "counts" slot/layer; falls back to NULL with a warning if unavailable.
+  counts_raw_slot <- if (slot == "counts") NULL else {
+    raw_attempt <- .get_assay_data("counts")
+    if (is.null(raw_attempt) || nrow(raw_attempt) == 0) {
+      warning("Could not extract raw counts slot/layer 'counts' from assay '",
+              assay, "'. $counts_raw will be NULL in the InputBundle. ",
+              "Sum-aggregation in obs_* generators will fall back to mean.")
+      NULL
+    } else {
+      raw_attempt
+    }
   }
 
   # 3. Gene ID handling (FLAG-04)
@@ -115,6 +134,10 @@ load_seurat <- function(seurat_path,
     gene_id          <- symbol_map$gene_id[map_idx[matched]]
     counts           <- counts[matched, , drop = FALSE]
     rownames(counts) <- gene_id
+    if (!is.null(counts_raw_slot)) {
+      counts_raw_slot           <- counts_raw_slot[matched, , drop = FALSE]
+      rownames(counts_raw_slot) <- gene_id
+    }
 
   } else {
     warning("Row names do not look like AT-IDs and no symbol_map provided. ",
@@ -141,6 +164,9 @@ load_seurat <- function(seurat_path,
   counts    <- counts[keep_genes, , drop = FALSE]
   gene_meta <- gene_meta[keep_genes, , drop = FALSE]
   rownames(gene_meta) <- NULL
+  if (!is.null(counts_raw_slot)) {
+    counts_raw_slot <- counts_raw_slot[keep_genes, , drop = FALSE]
+  }
   message(sum(keep_genes), " / ", n_before,
           " genes retained after min_cells filter.")
 
@@ -169,6 +195,9 @@ load_seurat <- function(seurat_path,
   keep_cells <- cell_meta[[stratum_var]] %in% stratum_levels
   cell_meta  <- cell_meta[keep_cells, , drop = FALSE]
   counts     <- counts[, keep_cells, drop = FALSE]
+  if (!is.null(counts_raw_slot)) {
+    counts_raw_slot <- counts_raw_slot[, keep_cells, drop = FALSE]
+  }
 
   if (ncol(counts) == 0) {
     stop("Zero cells retained after stratum_levels filtering.")
@@ -176,9 +205,20 @@ load_seurat <- function(seurat_path,
   message(ncol(counts), " cells retained across ",
           length(stratum_levels), " stratum levels.")
 
+  # Convert raw counts to integer matrix for downstream sum-aggregation.
+  # Storage is dense integer; use Matrix::as.matrix if sparse.
+  counts_raw_out <- if (!is.null(counts_raw_slot)) {
+    raw_m <- as.matrix(counts_raw_slot)
+    mode(raw_m) <- "integer"
+    raw_m
+  } else {
+    NULL
+  }
+
   # 6. Assemble and return InputBundle
   list(
     counts       = counts,
+    counts_raw   = counts_raw_out,   # raw integer counts (genes x cells); NULL if unavailable
     cell_meta    = cell_meta,
     gene_meta    = gene_meta,
     stratum_spec = list(variable = stratum_var, levels = stratum_levels),
