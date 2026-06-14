@@ -10,7 +10,7 @@
 # See docs/ARCHITECTURE.md and docs/PIPELINE_FLAGS.md for project context.
 
 suppressPackageStartupMessages({
-  library(coexpressionArabidopsis)
+  library(CoexprArabidopsis)
 })
 
 SCRIPT_START <- proc.time()
