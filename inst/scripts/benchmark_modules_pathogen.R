@@ -92,20 +92,9 @@ TF_CANDIDATES <- c(
   paste0("/Users/jep23kod/Nobori Lab (TSL) Dropbox/Tatsuya NOBORI/",
          "TSL/from_Ben/for_tatsuya/data/motifs-2026/Athaliana_motifs_metadata.tsv")
 )
-hits <- tryCatch(
-  list.files(
-    paste0("/Users/jep23kod/Nobori Lab (TSL) Dropbox/Tatsuya NOBORI"),
-    pattern    = "Athaliana_motifs_metadata",
-    recursive  = TRUE,
-    full.names = TRUE
-  ),
-  error = function(e) character(0)
-)
-message("[", Sys.time(), "] TF metadata search hits: ", length(hits))
-if (length(hits) > 0) print(hits)
-
+# Check only specific candidate paths — no recursive scan (Dropbox directories are large)
 TF_META_PATH <- NA_character_
-for (p in c(TF_CANDIDATES, hits)) {
+for (p in TF_CANDIDATES) {
   if (!is.na(p) && nchar(p) > 0 && file.exists(p)) {
     TF_META_PATH <- p
     break
@@ -138,8 +127,13 @@ N_METHODS    <- length(METHODS)
 message("[", Sys.time(), "] Grid: ", length(THRESHOLDS), " thresholds x ",
         N_METHODS, " methods = ", length(THRESHOLDS) * N_METHODS, " cells")
 
-# Pre-build per-threshold igraph and filtered pair tables
+# Pre-build per-threshold igraph and filtered pair tables.
+# R_score is discrete (multiples of per-stratum weights) so multiple consecutive
+# thresholds may produce the SAME edge set. Record the canonical_key for each
+# threshold to enable result caching and avoid redundant expensive WGCNA runs.
 threshold_data <- list()
+canonical_key  <- list()  # threshold key -> key of first threshold with same edge set
+
 for (thr in THRESHOLDS) {
   key <- as.character(thr)
   ps  <- rob$pair_scores[!is.na(rob$pair_scores$R_score) &
@@ -152,13 +146,35 @@ for (thr in THRESHOLDS) {
   gene_ids <- sort(union(ps$gene_id_A, ps$gene_id_B))
   weights  <- pmin(pmax(abs(tanh(ps$z_bar)), 0), 1)
 
-  g <- igraph::graph_from_data_frame(
-    d        = data.frame(from = ps$gene_id_A, to = ps$gene_id_B, weight = weights),
-    directed = FALSE,
-    vertices = data.frame(name = gene_ids)
-  )
-  threshold_data[[key]] <- list(pairs = ps, gene_ids = gene_ids, graph = g)
-  message("  thr=", thr, ": ", nrow(ps), " edges, ", length(gene_ids), " genes")
+  # Check if this edge set is identical to a previously-processed threshold
+  dup_of <- NA_character_
+  for (prev_key in names(threshold_data)) {
+    prev <- threshold_data[[prev_key]]
+    if (!is.null(prev) && nrow(prev$pairs) == nrow(ps) &&
+        length(prev$gene_ids) == length(gene_ids) &&
+        isTRUE(all.equal(sort(prev$gene_ids), sort(gene_ids)))) {
+      dup_of <- prev_key
+      break
+    }
+  }
+
+  if (!is.na(dup_of)) {
+    # Alias: same graph as dup_of — share the data object
+    threshold_data[[key]] <- threshold_data[[dup_of]]
+    canonical_key[[key]]  <- dup_of
+    message("  thr=", thr, ": same graph as thr=", dup_of,
+            " (", nrow(ps), " edges, ", length(gene_ids), " genes) — will reuse results")
+  } else {
+    g <- igraph::graph_from_data_frame(
+      d        = data.frame(from = ps$gene_id_A, to = ps$gene_id_B, weight = weights),
+      directed = FALSE,
+      vertices = data.frame(name = gene_ids)
+    )
+    threshold_data[[key]] <- list(pairs = ps, gene_ids = gene_ids, graph = g)
+    canonical_key[[key]]  <- key
+    message("  thr=", thr, ": ", nrow(ps), " edges, ", length(gene_ids),
+            " genes (new graph)")
+  }
 }
 
 # -----------
@@ -168,15 +184,29 @@ for (thr in THRESHOLDS) {
 assignments <- list()   # assignments[[thr_key]][[method_name]] = data.frame(gene_id, top_module)
 
 for (thr in THRESHOLDS) {
-  key <- as.character(thr)
-  td  <- threshold_data[[key]]
+  key   <- as.character(thr)
+  canon <- canonical_key[[key]]
+  td    <- threshold_data[[key]]
   if (is.null(td)) next
   assignments[[key]] <- list()
 
   for (meth in METHODS) {
-    label <- paste0("thr", thr, "_", meth$name)
-    message("[", Sys.time(), "] ", label)
+    label    <- paste0("thr", thr, "_", meth$name)
     out_path <- file.path(BENCH_DIR, "assignments", paste0(label, ".csv"))
+
+    # If this (threshold, method) cell maps to the same graph as a prior threshold,
+    # copy the prior result instead of recomputing.
+    if (!is.null(canon) && canon != key && !is.null(assignments[[canon]])) {
+      prior <- assignments[[canon]][[meth$name]]
+      if (!is.null(prior)) {
+        assignments[[key]][[meth$name]] <- prior
+        write.csv(prior, out_path, row.names = FALSE)
+        message("[", Sys.time(), "] ", label, " — copied from thr=", canon)
+        next
+      }
+    }
+
+    message("[", Sys.time(), "] ", label)
 
     gm <- tryCatch({
       if (meth$type == "wgcna") {
@@ -205,20 +235,20 @@ for (thr in THRESHOLDS) {
           igraph::membership(cl)
         }
 
-        gene_ids <- igraph::V(g)$name
-        mods     <- as.integer(mem)
+        gene_ids_g <- igraph::V(g)$name
+        mods       <- as.integer(mem)
 
         # Map communities smaller than MIN_MODULE_SIZE to module 0
-        sz          <- table(mods)
-        small_mods  <- as.integer(names(sz)[sz < MIN_MODULE_SIZE])
+        sz         <- table(mods)
+        small_mods <- as.integer(names(sz)[sz < MIN_MODULE_SIZE])
         mods[mods %in% small_mods] <- 0L
 
         # Remap non-zero IDs to sequential 1, 2, 3, ...
-        nonzero     <- sort(unique(mods[mods > 0L]))
-        remap       <- setNames(seq_along(nonzero), nonzero)
+        nonzero <- sort(unique(mods[mods > 0L]))
+        remap   <- setNames(seq_along(nonzero), nonzero)
         mods[mods > 0L] <- remap[as.character(mods[mods > 0L])]
 
-        data.frame(gene_id = gene_ids, top_module = mods,
+        data.frame(gene_id = gene_ids_g, top_module = mods,
                    stringsAsFactors = FALSE)
       }
     }, error = function(e) {
