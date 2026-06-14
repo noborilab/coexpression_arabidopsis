@@ -170,3 +170,19 @@ R_score is retained as one descriptor among several, not the primary ranking.
 `inst/scripts/compute_condition_patterns_pathogen.R` generates the pair table;
 `inst/scripts/module_condition_patterns.R` profiles each official module set.
 **Status**: IMPLEMENTED (2026-06-14).
+
+---
+
+## FLAG-13: GGM misses inducible/cell-specific transcription factors; pseudobulk captures them
+**Phase**: post-benchmark (2026-06)
+**Issue**: Cell-level SingleCellGGM misses inducible or cell-type-restricted transcription
+factors, as shown at family scale on the WRKY TF family (70 genes): GGM placed only 14/70
+in a confident module (4 more at near-zero/negative kME); subcluster pseudobulk captured
+47 additional WRKYs that GGM missed, many at high kME (e.g. WRKY8 kME 0.92 / 2858 partners;
+WRKY75 kME 0.89; WRKY35 kME 0.94). This reproduces the single-gene BON3 finding (FLAG/architecture
+note on rare cell populations) at family scale. Structural cause: GGM conditions over all cells
+and all genes, diluting pulse-induced or cell-type-restricted signal; pseudobulk uses subclusters
+as observations.
+**Decision**: GUIDANCE: for inducible or cell-type-restricted regulators, use pseudobulk
+(subcluster grouping). The two modes are complementary. Both modes are standard pipeline output.
+**Status**: documented; both modes are standard pipeline output.

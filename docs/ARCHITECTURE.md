@@ -495,6 +495,8 @@ mode selection for rare-population genes.
 - **Subcluster-level pseudobulk:** AT1G08860 was placed in an assigned module
   with kME ≈ 0.60 and approximately 1,032 partners.
 
+This single-gene finding was confirmed at family scale on the WRKY TF family (70 genes, FLAG-13): cell-level SingleCellGGM placed only 14/70 WRKYs in confident modules, while subcluster pseudobulk captured an additional 47 at high kME (e.g. WRKY8 0.92, WRKY35 0.94, WRKY75 0.89).
+
 ### Structural explanation
 
 GGM conditions on ~18k genes using all cells simultaneously. For a gene whose
