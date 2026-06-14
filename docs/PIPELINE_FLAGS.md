@@ -186,3 +186,26 @@ as observations.
 **Decision**: GUIDANCE: for inducible or cell-type-restricted regulators, use pseudobulk
 (subcluster grouping). The two modes are complementary. Both modes are standard pipeline output.
 **Status**: documented; both modes are standard pipeline output.
+
+---
+
+## FLAG-14: Observation-point design as a first-class variable
+**Phase**: Stage 0-2 (2026-06-14)
+**Issue**: Standard clustering optimises cell classification; co-expression needs
+observation points that spread along covariation axes and denoise without
+destroying within-group signal. Treating the observation-point design as a
+tunable variable — rather than a fixed implementation detail — reveals a
+fundamental degree of freedom in pseudobulk co-expression analysis. The
+design choice (granularity, aggregation method, normalization) has a large
+effect on which genes are "visible" and how stable the resulting network is.
+**Decision**: Implement multiple in-house observation-point generators
+(`obs_cluster`, `obs_subcluster`, `obs_metacell_knn`, `obs_stratified`,
+`obs_axis_bin`) with a standardised `ObsPointSet` interface, and a prior-free
+evaluation harness (`coexpr_eval.R`) that scores designs without reference to
+GO terms or known gene sets. The evaluation Pareto front (stability vs richness)
+guides design selection empirically. Comparison methods (hdWGCNA, CS-CORE,
+SuperCell, SEACells) are deferred; the interface is method-agnostic so they can
+be slotted in later. TF annotation remains post-hoc interpretation only — never
+edge estimation (see GRN boundary note in docs/ARCHITECTURE.md).
+**Status**: Stage 0-2 implemented (2026-06-14). Runner script:
+`inst/scripts/obs_design_sweep_pathogen.R`.

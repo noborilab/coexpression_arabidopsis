@@ -526,3 +526,106 @@ cell-level GGM cannot detect.
 The two modes are complementary, not competing. For a comprehensive analysis
 of a dataset with both broad and rare populations, running both and comparing
 the partner lists and module assignments for genes of interest is informative.
+
+---
+
+## Observation-point design (pseudobulk mode core) — FLAG-14
+
+### Conceptual frame
+
+Co-expression correlation is a function of how observation points (pseudobulk
+profiles) are distributed in expression space. Correlation signal lives entirely
+in the **variance across observation points**. Aggregating cells into a group and
+averaging **destroys within-group covariation**. The design goal is therefore NOT
+to classify cells correctly (that is clustering's goal) but to generate an
+observation-point set that **spreads along the covariation axes** we care about,
+reliably and without degenerate collapse.
+
+A design with too few points has low capacity (can only resolve a few axes); a
+design where all points are nearly identical has no spread (nothing to correlate).
+The ideal design tiles the manifold without destroying the variance structure that
+carries co-expression signal.
+
+### Goal boundary: expression-only co-expression, NOT GRN inference
+
+This pipeline recovers **co-expression modules from expression patterns alone**,
+prioritising breadth/recall over mechanistic certainty. Key distinctions:
+
+- We do **NOT** perform gene regulatory network (GRN) inference.
+- We deliberately do **NOT** use motif/ATAC/sequence/known-TF information to
+  infer or prune edges. That is the GRN goal — pursued by SCENIC, MINI-EX,
+  GRNBoost2, etc. — a **different objective** that optimises precision and misses
+  anything not in curated motifs.
+- TF annotation (e.g. `Athaliana_motifs_metadata.tsv`) is used **only for
+  post-hoc module interpretation** (labelling which TFs are co-expressed within
+  a module), **never for edge estimation**.
+- Co-expression here is **undirected** and agnostic to regulation, causation, or
+  directness of interaction.
+
+### Normalization: open empirical question
+
+Whether to aggregate raw counts (sum) or averaged log-normalized values (mean),
+and which depth-correction to apply to aggregated profiles, is treated as an
+**open question decided empirically** on each dataset. Some single-cell
+co-expression benchmarks find raw count aggregates competitive; library-size-
+stabilised aggregation also helps. We test on our own data and pick the method
+with lowest depth-leakage among those with competitive split-half reproducibility.
+See `R/observation_points.R: normalize_obs()` for the tested methods.
+
+Note: **Spearman correlation is invariant to monotonic per-gene transforms** (e.g.
+log1p) but is **not** invariant to per-point depth scaling. Depth handling (not
+log-transform per se) is the part that materially affects the network.
+
+### Observation-point generators (in-house designs)
+
+Multiple generators are implemented in `R/observation_points.R`. They share a
+method-agnostic output interface (`ObsPointSet`) so any generator can be fed into
+the evaluation harness and downstream correlation code without changes.
+
+Generators currently implemented:
+1. `obs_cluster` — graph-clustering at a tunable resolution
+2. `obs_subcluster` — precomputed subcluster column from Seurat metadata
+3. `obs_metacell_knn` — in-house metacell-style, anchored on the manifold
+4. `obs_stratified` — stratum combinations (e.g. cluster × condition)
+5. `obs_axis_bin` — bins along a chosen continuous axis (PCA or metadata)
+
+**Caveat (obs_metacell_knn):** Do NOT generate observation points by averaging
+random global cell subsets — random bags collapse to the global centroid and
+produce no spread. Anchoring each metacell on the manifold via kNN is what
+preserves covariation structure.
+
+Comparison methods (hdWGCNA, CS-CORE, SuperCell, SEACells) are **not yet
+integrated** but can be added by implementing the same `ObsPointSet` return
+interface. The evaluation harness is design-agnostic by construction.
+
+### Prior-free evaluation harness
+
+Design quality is measured with **prior-free metrics only** — no GO recovery,
+no known gene sets, no motif information. Metrics are implemented in
+`R/coexpr_eval.R`:
+
+| Metric | Function | What it measures |
+|---|---|---|
+| Split-half reproducibility | `eval_splithalf` | Agreement between two independent cell-half networks (matrix correlation + edge Jaccard) |
+| Depth-downsampling robustness | `eval_downsample_depth` | How correlation structure survives count thinning |
+| Cell-downsampling robustness | `eval_downsample_cells` | How much data the design needs |
+| Effective rank | `eval_effective_rank` | Participation ratio of singular values = number of independent axes resolved |
+| Visible genes | `eval_visible_genes` | Genes with non-degenerate variance across points |
+| Held-out predictivity | `eval_heldout_predictivity` | Cross-validated guilt-by-association R² (richness + stability jointly) |
+| Null gap | `eval_null_gap` | Ratio of real vs permuted edges above threshold |
+| Depth leakage | `eval_depth_leakage` | Spearman between degree and mean expression (detects depth confound) |
+
+**CRITICAL caveat:** Stability metrics (split-half, downsampling) alone favour
+trivial designs (one huge point, or only the dominant axis). They MUST be read
+jointly with richness metrics (effective rank, visible genes, held-out
+predictivity). The selection principle is the **stability-richness Pareto front**,
+not any single metric.
+
+BON3 (AT1G08860) and WRKY family recovery are post-hoc sanity readouts only —
+never selection criteria.
+
+### Status
+
+Stage 0-2 implemented: documentation, generators, normalization switch,
+prior-free evaluation harness, test suite. Stage 1 (normalization decision) and
+Stage 2 (granularity sweep) runner: `inst/scripts/obs_design_sweep_pathogen.R`.
