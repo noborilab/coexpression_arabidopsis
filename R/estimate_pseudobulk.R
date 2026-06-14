@@ -100,9 +100,13 @@ estimate_pseudobulk <- function(bundle, min_samples = 5, min_expr = 0) {
 
     gene_ids_used <- rownames(pb)
 
-    # Spearman via rank-transform-then-Pearson (see docs/BACKGROUND.md)
-    ranked  <- apply(pb, 2, rank)
-    cor_mat <- cor(t(ranked), method = "pearson")
+    # Spearman via rank-transform-then-Pearson (see docs/BACKGROUND.md).
+    # pb is genes × samples (p × N).
+    # apply(pb, 1, rank) ranks each gene ACROSS samples → result is N × p.
+    # t(...)  restores p × N so each row is one gene's rank profile across samples.
+    # cor(t(ranked)) correlates columns of the N × p matrix = gene-gene Spearman (p × p).
+    ranked  <- t(apply(pb, 1, rank))   # p × N: gene i ranked across N samples
+    cor_mat <- cor(t(ranked))
 
     # Upper triangle only, storage filter |weight| >= 0.1
     ut     <- which(upper.tri(cor_mat), arr.ind = TRUE)

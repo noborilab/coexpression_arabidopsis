@@ -201,6 +201,78 @@ test_that("pseudobulk: mode slot is 'pseudobulk'", {
   for (nr in res) expect_equal(nr$mode, "pseudobulk")
 })
 
+test_that("pseudobulk: Spearman direction correct — ranks across samples, not within", {
+  # Regression test for the ranking-margin bug:
+  #   apply(pb, 2, rank) ranks genes within each sample (wrong).
+  #   apply(pb, 1, rank) ranks each gene across samples (correct).
+  #
+  # Matrix: 10 genes × 10 samples. One cell per group → pseudobulk = raw counts.
+  #
+  #   Gene A (row 1): [1..10]     — low expression, monotone increasing
+  #   Gene B (row 2): [100..1000] — high expression, same monotone trend as A
+  #   Gene C (row 3): [10..1]     — low expression, opposite trend to A
+  #   Genes 4-10:     constant 50
+  #
+  # Correct Spearman (across-sample ranks):
+  #   r(A,B) = +1.0  — A and B share rank sequence [1,2,...,10]
+  #   r(A,C) = -1.0  — A and C have opposite rank sequences
+  #
+  # Buggy within-sample ranking:
+  #   B is always the top-ranked gene (value 100-1000 >> all others) in every
+  #   sample, so B's within-sample rank = 10 constantly → variance = 0 →
+  #   cor(A,B) = NA → pair absent from edge_table → w_AB = NA → test fails.
+
+  n_samples <- 10L
+  n_genes   <- 10L
+  gene_ids  <- .gene_ids(n_genes)
+
+  pb <- matrix(50, nrow = n_genes, ncol = n_samples,
+               dimnames = list(gene_ids,
+                               paste0("G", seq_len(n_samples))))
+  pb[1L, ] <- seq(1L, 10L)                   # A: increasing
+  pb[2L, ] <- seq(100L, 1000L, by = 100L)    # B: same trend, high range
+  pb[3L, ] <- seq(10L, 1L)                   # C: decreasing
+
+  bundle <- list(
+    counts       = pb,
+    cell_meta    = data.frame(
+      cell_id   = paste0("G", seq_len(n_samples)),
+      condition = "Mock",
+      group_var = paste0("G", seq_len(n_samples)),
+      stringsAsFactors = FALSE
+    ),
+    gene_meta    = data.frame(gene_id     = gene_ids,
+                               gene_symbol = gene_ids,
+                               stringsAsFactors = FALSE),
+    stratum_spec = list(variable = "condition", levels = "Mock"),
+    dataset_id   = "direction_test"
+  )
+
+  res <- estimate_pseudobulk(bundle, min_samples = 5L)
+  et  <- res[["Mock"]]$edge_table
+
+  g_A <- gene_ids[1L]; g_B <- gene_ids[2L]; g_C <- gene_ids[3L]
+
+  .pw <- function(a, b) {
+    r <- et[(et$gene_id_A == a & et$gene_id_B == b) |
+            (et$gene_id_A == b & et$gene_id_B == a), , drop = FALSE]
+    if (nrow(r) == 0L) NA_real_ else r$weight[1L]
+  }
+
+  w_AB <- .pw(g_A, g_B)
+  w_AC <- .pw(g_A, g_C)
+
+  expect_false(is.na(w_AB),
+               label = "A-B pair in edge_table (Spearman=+1 must pass |w|>=0.1 cutoff)")
+  expect_gt(w_AB, 0.8,
+            label = "A-B Spearman strongly positive: same cross-sample trend")
+
+  expect_false(is.na(w_AC),
+               label = "A-C pair in edge_table (Spearman=-1, |w|=1 passes cutoff)")
+  expect_lt(w_AC, -0.8,
+            label = "A-C Spearman strongly negative: opposite cross-sample trends")
+})
+
 # ---------------------------------------------------------------------------
 # estimate_singlecellggm tests
 # ---------------------------------------------------------------------------
