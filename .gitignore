@@ -16,6 +16,7 @@ tests/testthat/Rplots.pdf
 # Large outputs and real data (never commit)
 results/
 output_per_condition/
+output_pseudobulk_pathogen/
 output_all/
 *.rds
 *.rda
