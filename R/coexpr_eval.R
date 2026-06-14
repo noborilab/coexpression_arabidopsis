@@ -604,6 +604,19 @@ eval_heldout_predictivity <- function(obs,
     return(na_result)
   }
 
+  # Large-n guard: building an n_genes×n_genes weight matrix is O(n²) in memory
+  # and causes GC blowup above ~500 genes. Subsample genes for the estimate.
+  max_genes_full <- 500L
+  gene_idx <- seq_len(n_genes)
+  if (n_genes > max_genes_full) {
+    set.seed(42L)
+    gene_idx <- sort(sample(n_genes, max_genes_full))
+    mat      <- mat[gene_idx, , drop = FALSE]
+    n_genes  <- max_genes_full
+    message("eval_heldout_predictivity: subsampling to ", max_genes_full,
+            " genes for O(n²) guard (full n_genes = ", nrow(obs$matrix), ").")
+  }
+
   # Reduce n_folds if too few points.
   if (n_points < 2L * n_folds) {
     n_folds <- max(2L, floor(n_points / 3L))
@@ -629,29 +642,31 @@ eval_heldout_predictivity <- function(obs,
     )
     diag(cor_train) <- 0
 
-    # Build absolute-value weight matrix: W[g, j] = |cor[g,j]| for top-k j,
-    # 0 otherwise.
-    W_abs <- matrix(0, nrow = n_genes, ncol = n_genes)
+    # Compute predictions gene-by-gene to avoid materialising an n²-element
+    # weight matrix. Each gene's top-k partners are found from one row of
+    # cor_train, and the prediction is a weighted mean of partner values.
+    n_test <- length(test_idx)
+    preds  <- matrix(NA_real_, nrow = n_genes, ncol = n_test)
+
     for (g in seq_len(n_genes)) {
       row_abs <- abs(cor_train[g, ])
       top_k_idx <- order(row_abs, decreasing = TRUE)[seq_len(k_use)]
-      W_abs[g, top_k_idx] <- row_abs[top_k_idx]
+      w <- row_abs[top_k_idx]
+      w_sum <- sum(w)
+      if (w_sum == 0) next
+      preds[g, ] <- as.numeric((w / w_sum) %*% mat_test[top_k_idx, , drop = FALSE])
     }
 
-    # Normalize rows so they sum to 1 (handles zero-row case).
-    row_sums <- rowSums(W_abs)
-    row_sums[row_sums == 0] <- 1
-    W_abs_norm <- sweep(W_abs, 1L, row_sums, "/")
+    rm(cor_train); gc(verbose = FALSE)
 
-    # Predict: n_genes × n_test
-    preds <- W_abs_norm %*% mat_test
-
-    # Per-gene R² on held-out fold.
+    # Per-gene R² on held-out fold; clip to [-1, 1] to guard against
+    # numerical blow-up from near-zero ss_tot.
     y_mean <- rowMeans(mat_test)
-    ss_res <- rowSums((mat_test - preds)^2)
+    ss_res <- rowSums((mat_test - preds)^2, na.rm = TRUE)
     ss_tot <- rowSums((mat_test - y_mean)^2)
 
     r2_fold <- ifelse(ss_tot == 0, NA_real_, 1 - ss_res / ss_tot)
+    r2_fold <- pmax(-1, pmin(1, r2_fold))   # clip; removes blow-up outliers
     r2_mat[, fold] <- r2_fold
   }
 
