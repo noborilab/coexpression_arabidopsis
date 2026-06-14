@@ -144,3 +144,29 @@ The choice of which result set to use for a given downstream analysis is left to
 the user/analyst. See inst/scripts/run_official_modules_pathogen.R for the
 implementation and docs/ARCHITECTURE.md for the full rationale.
 **Status**: RESOLVED (2026-06). Four official module sets produced.
+
+---
+
+## FLAG-12: R_score consistency vs condition-specificity
+**Phase**: post-benchmark (2026-06)
+**Issue**: The R_score weighted-consistency statistic structurally favours
+all-condition pairs (I_s = 1 in all strata → R_score = 1.0) and buries
+condition-specific pairs (e.g. a pair present only in AvrRpm1 gets R_score ≈
+0.25). But condition-specific modules are often of primary biological interest.
+Filtering on R_score therefore suppresses exactly the subset users most want to
+examine when studying condition-specific responses.
+**Decision**: Added `characterize_condition_pattern()` in `R/robustness.R`,
+producing:
+- **Discrete 4-bit pattern** per pair (16 possible patterns; bit order = condition_order):
+  named labels for the 8 most interpretable patterns ("constitutive_all",
+  "pan_pathogen", "ETI_shared", "single_<condition>", "none") and
+  "mixed_<pattern>" for the remaining 8. Labels are mechanical — they name bit
+  patterns, not biological mechanisms.
+- **Continuous per-condition weights** (w_Mock, w_DC3000, w_AvrRpt2, w_AvrRpm1)
+  drawn directly from the per-condition edge tables, plus w_max, w_min, w_range,
+  w_mean, and a specificity_index = (w_max − w_mean_of_others) / (w_max + ε).
+All 1,413,505 pairs are characterised and saved (FLAG-03 compliant).
+R_score is retained as one descriptor among several, not the primary ranking.
+`inst/scripts/compute_condition_patterns_pathogen.R` generates the pair table;
+`inst/scripts/module_condition_patterns.R` profiles each official module set.
+**Status**: IMPLEMENTED (2026-06-14).

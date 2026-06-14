@@ -253,3 +253,162 @@ test_that("save_robustness writes ALL pairs including R_score=0 ones (FLAG-03)",
   expect_equal(nrow(saved), nrow(rob$pair_scores),
                info = "pair_scores_full.csv must contain ALL pairs, including R_score < 1")
 })
+
+# ---------------------------------------------------------------------------
+# characterize_condition_pattern() tests
+# ---------------------------------------------------------------------------
+# Shared test helper: build a NetworkResult with exact gene-pair edges.
+.make_nr_cp <- function(a_ids, b_ids, weights, n_cells = 100L, stratum_id) {
+  list(
+    edge_table = data.frame(
+      gene_id_A    = a_ids,
+      gene_id_B    = b_ids,
+      weight       = weights,
+      coex_cells   = rep(50L, length(weights)),
+      sampling_num = rep(100L, length(weights)),
+      stringsAsFactors = FALSE
+    ),
+    gene_ids   = union(a_ids, b_ids),
+    stratum_id = stratum_id,
+    mode       = "singlecellggm",
+    params     = list(n_cells = n_cells, n_genes = length(union(a_ids, b_ids)),
+                      pcor_cutoff = 0.02, n_iter = 100L,
+                      subsample = 2000L, aggregation = "min_abs_pcor",
+                      coex_cutoff = 10L, keep_negative = FALSE,
+                      ridge = 1e-6, seed = 98L),
+    timestamp  = Sys.time()
+  )
+}
+.make_nr_empty_cp <- function(n_cells = 100L, stratum_id) {
+  list(
+    edge_table = data.frame(
+      gene_id_A = character(0), gene_id_B = character(0),
+      weight = numeric(0), coex_cells = integer(0), sampling_num = integer(0)
+    ),
+    gene_ids   = character(0),
+    stratum_id = stratum_id,
+    mode       = "singlecellggm",
+    params     = list(n_cells = n_cells, n_genes = 0L,
+                      pcor_cutoff = 0.02, n_iter = 100L,
+                      subsample = 2000L, aggregation = "min_abs_pcor",
+                      coex_cutoff = 10L, keep_negative = FALSE,
+                      ridge = 1e-6, seed = 98L),
+    timestamp  = Sys.time()
+  )
+}
+
+# Build a controlled 4-condition network for CCP tests.
+# Pairs and their condition presence (weight = 0.5 when present):
+#   (AT1G00010, AT1G00020): all 4 conditions  → "1111" / "constitutive_all"
+#   (AT1G00010, AT1G00030): AvrRpm1 only       → "0001" / "single_AvrRpm1"
+#   (AT1G00010, AT1G00040): DC3000+AvrRpt2+AvrRpm1 → "0111" / "pan_pathogen"
+#   (AT1G00020, AT1G00030): AvrRpt2+AvrRpm1    → "0011" / "ETI_shared"
+# n_cells = 100 → SE ≈ 0.102 → thresh ≈ 0.167; weight 0.5 → z ≈ 0.549 → I=1 ✓
+.build_ccp_fixture <- function() {
+  W <- 0.5
+  g <- c("AT1G00010", "AT1G00020", "AT1G00030", "AT1G00040")
+
+  nl <- list(
+    Mock = .make_nr_cp(
+      a_ids = "AT1G00010", b_ids = "AT1G00020", weights = W, stratum_id = "Mock"
+    ),
+    DC3000 = .make_nr_cp(
+      a_ids = c("AT1G00010", "AT1G00010"),
+      b_ids = c("AT1G00020", "AT1G00040"),
+      weights = c(W, W), stratum_id = "DC3000"
+    ),
+    AvrRpt2 = .make_nr_cp(
+      a_ids = c("AT1G00010", "AT1G00010", "AT1G00020"),
+      b_ids = c("AT1G00020", "AT1G00040", "AT1G00030"),
+      weights = c(W, W, W), stratum_id = "AvrRpt2"
+    ),
+    AvrRpm1 = .make_nr_cp(
+      a_ids = c("AT1G00010", "AT1G00010", "AT1G00010", "AT1G00020"),
+      b_ids = c("AT1G00020", "AT1G00030", "AT1G00040", "AT1G00030"),
+      weights = c(W, W, W, W), stratum_id = "AvrRpm1"
+    )
+  )
+
+  rob <- compute_robustness(nl)
+  list(rob = rob, nl = nl)
+}
+
+# ---------------------------------------------------------------------------
+# Test 9 – pattern string matches the I_s bits in condition_order
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: pattern string matches I_s bits in order", {
+  fix <- .build_ccp_fixture()
+  cp  <- characterize_condition_pattern(fix$rob, fix$nl)
+
+  for (i in seq_len(nrow(cp))) {
+    expected_pat <- paste(cp$I_Mock[i], cp$I_DC3000[i],
+                          cp$I_AvrRpt2[i], cp$I_AvrRpm1[i], sep = "")
+    expect_equal(cp$pattern[i], expected_pat,
+                 info = paste("Row", i, "gene_id_A =", cp$gene_id_A[i]))
+  }
+})
+
+# ---------------------------------------------------------------------------
+# Test 10 – n_conditions_active equals sum of I_s bits
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: n_conditions_active equals sum of bits", {
+  fix <- .build_ccp_fixture()
+  cp  <- characterize_condition_pattern(fix$rob, fix$nl)
+
+  bit_sums <- cp$I_Mock + cp$I_DC3000 + cp$I_AvrRpt2 + cp$I_AvrRpm1
+  expect_equal(cp$n_conditions_active, bit_sums,
+               info = "n_conditions_active must equal sum of I_ columns")
+})
+
+# ---------------------------------------------------------------------------
+# Test 11 – w_* columns match per-network weights for a constructed example
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: w_* columns match per-network weights", {
+  # Use distinct weights per condition so we can verify each is read correctly.
+  g <- c("AT1G00010", "AT1G00020")
+  nl4 <- list(
+    Mock    = .make_nr_cp("AT1G00010", "AT1G00020", weights = 0.30, stratum_id = "Mock"),
+    DC3000  = .make_nr_cp("AT1G00010", "AT1G00020", weights = 0.40, stratum_id = "DC3000"),
+    AvrRpt2 = .make_nr_cp("AT1G00010", "AT1G00020", weights = 0.50, stratum_id = "AvrRpt2"),
+    AvrRpm1 = .make_nr_cp("AT1G00010", "AT1G00020", weights = 0.20, stratum_id = "AvrRpm1")
+  )
+  rob4 <- compute_robustness(nl4)
+  cp   <- characterize_condition_pattern(rob4, nl4)
+
+  expect_equal(nrow(cp), 1L, info = "One pair in this network")
+  expect_equal(cp$w_Mock,    0.30, tolerance = 1e-9)
+  expect_equal(cp$w_DC3000,  0.40, tolerance = 1e-9)
+  expect_equal(cp$w_AvrRpt2, 0.50, tolerance = 1e-9)
+  expect_equal(cp$w_AvrRpm1, 0.20, tolerance = 1e-9)
+  expect_equal(cp$w_max,     0.50, tolerance = 1e-9)
+  expect_equal(cp$w_min,     0.20, tolerance = 1e-9)
+  expect_equal(cp$w_range,   0.30, tolerance = 1e-9)
+  expect_equal(cp$w_mean,    mean(c(0.30, 0.40, 0.50, 0.20)), tolerance = 1e-9)
+})
+
+# ---------------------------------------------------------------------------
+# Test 12 – AvrRpm1-only pair gets pattern "0001" and high specificity_index
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: AvrRpm1-only pair → pattern 0001, specificity near 1", {
+  fix <- .build_ccp_fixture()
+  cp  <- characterize_condition_pattern(fix$rob, fix$nl)
+
+  # The pair (AT1G00010, AT1G00030) is present only in AvrRpm1
+  idx <- cp$gene_id_A == "AT1G00010" & cp$gene_id_B == "AT1G00030"
+  expect_equal(sum(idx), 1L, info = "Fixture should contain exactly one AT1G00010–AT1G00030 pair")
+
+  row <- cp[idx, ]
+  expect_equal(row$pattern,       "0001", info = "Pattern should be 0001 (only AvrRpm1 active)")
+  expect_equal(row$pattern_label, "single_AvrRpm1")
+  expect_equal(row$n_conditions_active, 1L)
+  expect_equal(row$w_Mock,    0.0, tolerance = 1e-9)
+  expect_equal(row$w_DC3000,  0.0, tolerance = 1e-9)
+  expect_equal(row$w_AvrRpt2, 0.0, tolerance = 1e-9)
+  expect_equal(row$w_AvrRpm1, 0.5, tolerance = 1e-9)
+  # specificity_index = (0.5 - 0) / (0.5 + 1e-6) ≈ 0.9999980
+  expect_gt(row$specificity_index, 0.99)
+})

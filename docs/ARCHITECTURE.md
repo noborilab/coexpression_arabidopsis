@@ -410,3 +410,117 @@ themselves):
 | `$r_score_threshold` | numeric | e.g. `0.5`, `0.6` |
 
 See also `docs/OUTPUT_SCHEMA.md` for the updated ModuleInput slot table.
+
+---
+
+## Condition-pattern characterization
+
+`characterize_condition_pattern()` in `R/robustness.R` extends the robustness
+layer with a flat, comprehensive description of each pair's cross-condition
+activity. It operates on a `RobustnessResult` plus the per-condition
+`NetworkResult` list and returns one row per pair with two output tracks:
+
+### Discrete pattern (threshold-based)
+
+The four `I_<condition>` indicator columns already produced by
+`compute_robustness()` are concatenated into a 4-character bit string in
+`condition_order` (default: Mock / DC3000 / AvrRpt2 / AvrRpm1). All 16 possible
+patterns are assigned a `pattern_label`:
+
+| Pattern | Label |
+|---|---|
+| `1111` | `constitutive_all` |
+| `0111` | `pan_pathogen` |
+| `0011` | `ETI_shared` |
+| `0001` | `single_AvrRpm1` |
+| `0010` | `single_AvrRpt2` |
+| `0100` | `single_DC3000` |
+| `1000` | `single_Mock` |
+| `0000` | `none` |
+| all others | `mixed_<pattern>` |
+
+**These labels are mechanical names for bit patterns.** They carry no
+claim about regulatory mechanism, epistasis, or causal structure. "ETI_shared"
+means bits 3 and 4 are both set; it does not claim the genes are involved in
+ETI. Use the labels as grouping handles, not biological assertions.
+
+### Continuous profile (threshold-free)
+
+For each condition, the raw edge weight (pcor) is looked up from the
+per-condition `edge_table`. Pairs absent from a condition's network receive
+weight 0. Derived columns: `w_max`, `w_min`, `w_range`, `w_mean`, and a
+`specificity_index`:
+
+```
+specificity_index = (w_max - w_mean_of_others) / (w_max + ε)
+  where w_mean_of_others = (Σ w - w_max) / (S - 1),  ε = 1e-6
+```
+
+Ranges from 0 (uniform across all conditions) toward 1 (signal concentrated in
+a single condition).
+
+### Usage
+
+The full pair table (`pair_condition_patterns.csv`, all 1.4M pairs, FLAG-03
+compliant) supports both flat filtering by `pattern_label` and continuous
+clustering on the `w_<condition>` matrix. The companion
+`module_condition_patterns.csv` (one row per module per set) summarises the
+distribution of patterns within each module (`dominant_pattern`,
+`frac_<label>`, mean `w_<condition>`, `module_specificity_index`).
+
+This is the recommended way to find condition-specific modules: filter or sort
+`all_modules_condition_patterns.csv` by `dominant_pattern` or
+`frac_single_<condition>` rather than by R_score, which structurally
+de-prioritises condition-specific pairs.
+
+### Generalisation
+
+The function is not specific to the pathogen 4-condition design. Any
+`RobustnessResult` with multiple strata will produce a meaningful pattern
+characterisation. For S strata, the pattern string has S bits; named shortcuts
+(`pan_pathogen`, `ETI_shared`) apply only to the default 4-condition order.
+
+---
+
+## Estimation mode and rare cell populations
+
+A structural comparison of the two estimation modes on the same gene can guide
+mode selection for rare-population genes.
+
+### Empirical finding (AT1G08860 / BON3, pathogen multiome)
+
+- **Cell-level SingleCellGGM (pooled):** AT1G08860 was placed in the grey
+  (unassigned) module with near-zero kME and approximately 11 weak,
+  condition-private partners (each appearing in a single condition only).
+- **Subcluster-level pseudobulk:** AT1G08860 was placed in an assigned module
+  with kME ≈ 0.60 and approximately 1,032 partners.
+
+### Structural explanation
+
+GGM conditions on ~18k genes using all cells simultaneously. For a gene whose
+expression is elevated only in a rare cell population, the signal is diluted by
+the large number of cells where the gene is near zero. The partial-correlation
+estimate reflects the marginal cell-level structure, which is dominated by
+abundant cell types.
+
+Pseudobulk at the subcluster level uses subclusters as observations. A
+subcluster in which the gene is highly expressed becomes one data point that
+drives the marginal Spearman correlation with co-expressed partners. Rare
+populations therefore contribute in proportion to the number of subclusters they
+span, not in proportion to their cell count — recovering co-expression that
+cell-level GGM cannot detect.
+
+### Guidance for mode selection
+
+- **Pseudobulk (subcluster grouping)** is the recommended first mode for
+  recovering co-expression of rare-cell-population genes. The number of
+  subclusters observed determines statistical power, not the raw cell count
+  for the rare type.
+- **Cell-level SingleCellGGM** is better suited for dense, broadly-expressed
+  network structure across the full gene universe and for removing confounding
+  by indirect regulation (partial vs marginal correlation). Its effective
+  resolution degrades for genes expressed in a small fraction of cells.
+
+The two modes are complementary, not competing. For a comprehensive analysis
+of a dataset with both broad and rare populations, running both and comparing
+the partner lists and module assignments for genes of interest is informative.

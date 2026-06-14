@@ -259,3 +259,134 @@ save_robustness <- function(rob, outdir) {
 
   invisible(outdir)
 }
+
+# ---------------------------------------------------------------------------
+
+#' Characterize each gene pair by its cross-condition activity pattern
+#'
+#' Produces BOTH a discrete binary pattern label and the continuous
+#' per-condition effect sizes, so pairs can be grouped by pattern OR clustered
+#' on the continuous matrix. The discrete pattern is derived mechanically from
+#' the I_s indicators already present in `rob$pair_scores`. Named labels
+#' ("pan_pathogen", "ETI_shared", etc.) are convenient handles for bit patterns;
+#' they do not imply any biological interpretation.
+#'
+#' **Pattern label lookup (default 4-condition order
+#' Mock / DC3000 / AvrRpt2 / AvrRpm1):**
+#' - `"1111"` → `"constitutive_all"`
+#' - `"0111"` → `"pan_pathogen"` (DC3000 + AvrRpt2 + AvrRpm1, not Mock)
+#' - `"0011"` → `"ETI_shared"` (AvrRpt2 + AvrRpm1)
+#' - `"0000"` → `"none"`
+#' - Single-bit patterns → `"single_<condition>"`
+#' - All other patterns → `"mixed_<pattern>"`
+#'
+#' **Specificity index:** `(w_max - w_mean_of_others) / (w_max + epsilon)`,
+#' where `w_mean_of_others = (sum(w) - w_max) / (S - 1)` and `epsilon = 1e-6`.
+#' Approaches 1 when signal is concentrated in one condition; approaches 0
+#' when uniform across all conditions.
+#'
+#' @param rob RobustnessResult from [compute_robustness()]. `$pair_scores` must
+#'   contain `I_<condition>` columns for each element of `condition_order`.
+#' @param network_list Named list of NetworkResult (one per condition). Names
+#'   must include each element of `condition_order`. Conditions absent from the
+#'   list are treated as weight = 0 for all pairs.
+#' @param condition_order Character vector fixing the bit order for the pattern
+#'   string. Default `c("Mock","DC3000","AvrRpt2","AvrRpm1")`.
+#' @return `data.frame`, one row per pair in `rob$pair_scores`, with columns:
+#'   `gene_id_A`, `gene_id_B`;
+#'   `I_<condition>` (integer 0/1, from rob);
+#'   `pattern` (S-character bit string in condition_order);
+#'   `pattern_label` (category string);
+#'   `n_conditions_active` (integer 0–S);
+#'   `w_<condition>` (pcor weight from per-condition network, or 0 if absent);
+#'   `w_max`, `w_min`, `w_range`, `w_mean`, `specificity_index`.
+#' @export
+characterize_condition_pattern <- function(rob, network_list,
+  condition_order = c("Mock", "DC3000", "AvrRpt2", "AvrRpm1")) {
+
+  ps <- rob$pair_scores
+  S  <- length(condition_order)
+
+  i_cols <- paste0("I_", condition_order)
+  w_cols <- paste0("w_", condition_order)
+
+  # ---- continuous weights: look up per-condition edge weight ----------------
+
+  pair_key <- .canonical_key(ps$gene_id_A, ps$gene_id_B)
+  w_mat    <- matrix(0.0, nrow = nrow(ps), ncol = S,
+                     dimnames = list(NULL, w_cols))
+
+  for (ci in seq_len(S)) {
+    cond <- condition_order[ci]
+    nr   <- network_list[[cond]]
+    if (is.null(nr)) next
+    et <- nr$edge_table
+    if (is.null(et) || nrow(et) == 0L) next
+    ck       <- .canonical_key(et$gene_id_A, et$gene_id_B)
+    w_lookup <- setNames(et$weight, ck)
+    matched  <- w_lookup[pair_key]
+    matched[is.na(matched)] <- 0.0
+    w_mat[, ci] <- as.numeric(matched)
+  }
+
+  # ---- discrete pattern from I_s indicators in rob$pair_scores --------------
+
+  I_mat <- matrix(NA_integer_, nrow = nrow(ps), ncol = S)
+  for (ci in seq_len(S)) {
+    col <- i_cols[ci]
+    if (col %in% names(ps)) I_mat[, ci] <- as.integer(ps[[col]])
+  }
+
+  pattern <- apply(I_mat, 1L, paste, collapse = "")
+
+  # Assign labels (at most 2^S distinct patterns; map built on unique ones only)
+  .pat_label <- function(p) {
+    bits     <- as.integer(strsplit(p, "")[[1]])
+    n_active <- sum(bits, na.rm = TRUE)
+    if (n_active == 0L) return("none")
+    if (n_active == S)  return("constitutive_all")
+    if (n_active == 1L) return(paste0("single_", condition_order[which(bits == 1L)]))
+    if (S == 4L &&
+        identical(condition_order, c("Mock", "DC3000", "AvrRpt2", "AvrRpm1"))) {
+      if (p == "0111") return("pan_pathogen")
+      if (p == "0011") return("ETI_shared")
+    }
+    paste0("mixed_", p)
+  }
+
+  unique_pats   <- unique(pattern)
+  label_map     <- setNames(vapply(unique_pats, .pat_label, character(1)),
+                            unique_pats)
+  pattern_label <- unname(label_map[pattern])
+
+  n_conditions_active <- rowSums(I_mat, na.rm = TRUE)
+
+  # ---- continuous statistics -----------------------------------------------
+
+  w_max   <- apply(w_mat, 1L, max)
+  w_min   <- apply(w_mat, 1L, min)
+  w_range <- w_max - w_min
+  w_mean  <- rowMeans(w_mat)
+
+  epsilon       <- 1e-6
+  w_mean_others <- (rowSums(w_mat) - w_max) / max(S - 1L, 1L)
+  specificity_index <- (w_max - w_mean_others) / (w_max + epsilon)
+
+  # ---- assemble result ------------------------------------------------------
+
+  out <- data.frame(gene_id_A = ps$gene_id_A,
+                    gene_id_B = ps$gene_id_B,
+                    stringsAsFactors = FALSE)
+  for (ci in seq_len(S)) out[[i_cols[ci]]] <- I_mat[, ci]
+  out$pattern             <- pattern
+  out$pattern_label       <- pattern_label
+  out$n_conditions_active <- as.integer(n_conditions_active)
+  for (ci in seq_len(S)) out[[w_cols[ci]]] <- w_mat[, ci]
+  out$w_max             <- w_max
+  out$w_min             <- w_min
+  out$w_range           <- w_range
+  out$w_mean            <- w_mean
+  out$specificity_index <- specificity_index
+
+  out
+}
