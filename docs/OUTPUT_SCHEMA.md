@@ -134,10 +134,13 @@ module assignments, per-module summaries, hub genes, TF members, and eigengenes.
 |---|---|---|
 | `$gene_module` | data.frame | One row per gene (all expressed genes, e.g. ~24,670). Saved as `gene_module.csv`. |
 | `$module_meta` | data.frame | One row per module. Saved as `module_meta.csv`. |
-| `$module_hier` | data.frame | Sub-module to top-module nesting map. Saved as `module_hier.csv`. |
+| `$module_hier` | data.frame | Sub-module to top-module nesting map. Saved as `module_hier.csv`. Empty data.frame for Louvain sets (no hierarchical structure). |
 | `$hub_genes` | data.frame | Top hub genes per module. Saved as `hub_genes.csv`. |
 | `$module_tfs` | data.frame | TF members per module. Saved as `module_tfs.csv`. |
 | `$eigengenes` | matrix (samples × modules) | Module eigengenes. Saved as `eigengenes.csv`. |
+| `$method` | character | Module construction method: `"wgcna_p1"` \| `"louvain"` \| user-defined. Set by the calling script, not by the core `build_*` functions. |
+| `$graph` | character | Graph label: `"large"` \| `"small"` \| user-defined. Corresponds to the R_score threshold used to filter the edge set. |
+| `$r_score_threshold` | numeric | The R_score minimum applied to `rob$pair_scores` before module construction (e.g. `0.5` for the large graph, `0.6` for the small graph on 4-condition pathogen data). |
 
 ### `$gene_module` columns
 

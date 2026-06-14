@@ -124,3 +124,23 @@ pcor only). A toggle `keep_negative = TRUE` is exposed for users who want signed
 networks or wish to study negative partial correlations. See estimate_singlecellggm.R:
 the keep_edge filter in the post-loop section.
 **Status**: Implemented in Phase 2c.
+
+---
+
+## FLAG-11: WGCNA soft-thresholding on GGM partial-correlation networks
+**Phase**: benchmark (2026-06)
+**Issue**: WGCNA soft-thresholding was designed for dense correlation matrices.
+On GGM output (already sparse; partial correlations), auto soft-power selection
+chose power=1 and scale-free R² fit was poor (max R²≈0.67). The benchmark
+(inst/scripts/benchmark_modules_pathogen.R) compared WGCNA at powers 1/4/6/8
+and graph-clustering methods (Louvain, Leiden) across five R_score thresholds
+(0.3–0.7) on the pathogen multiome GGM robustness results. Evaluation was
+structure-only: modularity, grey rate, module size, cross-method ARI.
+**Decision**: RESOLVED — pipeline adopts dual-method strategy: WGCNA power=1
+(conservative, high inter-module separation, hierarchical sub-module structure)
++ Louvain (comprehensive, high modularity, no hierarchy). Both methods run on
+both graphs (large: R_score ≥ 0.5; small: R_score ≥ 0.6) as standard output.
+The choice of which result set to use for a given downstream analysis is left to
+the user/analyst. See inst/scripts/run_official_modules_pathogen.R for the
+implementation and docs/ARCHITECTURE.md for the full rationale.
+**Status**: RESOLVED (2026-06). Four official module sets produced.

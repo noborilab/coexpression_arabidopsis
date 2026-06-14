@@ -326,3 +326,87 @@ Plugin examples:
 | `config/example_config.yaml` | Reference config with all settable parameters |
 | `plugins/` | Dataset- and lab-specific assets; not imported by core |
 | `inst/scripts/run_pipeline.R` | Top-level driver; reads config; calls adapter → estimation → robustness → interpret → goi_lookup |
+
+---
+
+## Module construction methods (under evaluation)
+
+For GGM mode, the interpretation layer currently supports multiple module
+construction paths:
+
+- **WGCNA** at explicit soft powers (1, 4, 6, 8) — `build_wgcna_modules()`
+  with `soft_power` override. Auto power selection on GGM output converges
+  to power=1 with poor scale-free fit (FLAG-11).
+- **Louvain** — `igraph::cluster_louvain()` on the R_score-filtered weighted
+  graph (weight = abs(tanh(z_bar))).
+- **Leiden** — `igraph::cluster_leiden()` with objective_function='modularity'
+  on the same graph.
+
+A comprehensive benchmarking layer (5 thresholds × 6 methods = 30 cells)
+evaluates structure-only metrics (modularity, grey rate, module sizes, Gini,
+cross-method ARI/NMI) without biological pre-judgment.
+See `inst/scripts/benchmark_modules_pathogen.R` and
+`results/pathogen_multiome/method_benchmark/`.
+
+This benchmarking step may become a permanent, general-purpose
+`benchmark_module_methods()` pipeline component — see BENCHMARK_REPORT.md
+design note section for the proposed API.
+
+---
+
+## Official module sets — pathogen multiome
+
+The benchmark resolved to a **dual-method strategy** on **two graphs**, producing
+four official module sets as standard output:
+
+| Set | Graph | Method | R_score threshold |
+|---|---|---|---|
+| `large_wgcna` | large | WGCNA power=1 | ≥ 0.5 |
+| `large_louvain` | large | Louvain | ≥ 0.5 |
+| `small_wgcna` | small | WGCNA power=1 | ≥ 0.6 |
+| `small_louvain` | small | Louvain | ≥ 0.6 |
+
+### Why two methods
+
+- **WGCNA power=1** — conservative, hierarchical (top + sub module structure),
+  high inter-module separation, suitable for identifying compact co-regulatory
+  cores. `sub_module` is meaningful only for WGCNA sets.
+- **Louvain** — comprehensive, maximises modularity across the full graph,
+  tends to produce more and larger modules with higher assigned-gene coverage.
+  `sub_module = NA` throughout (no hierarchical structure); `module_hier` is an
+  empty data.frame for Louvain sets.
+
+Both methods run on both graphs as standard output. Which set to use for a given
+downstream analysis is left to the user/analyst.
+
+### Why two graphs (R_score thresholds)
+
+On 4-condition pathogen data, R_score is **discrete** with only 5 possible
+values: 0, 0.25, 0.5, 0.75, 1.0 (corresponding to 0/1/2/3/4 conditions meeting
+the evidence criterion). Thresholds 0.3 and 0.4 therefore resolve to the same
+graph as 0.5; thresholds 0.6 and 0.7 resolve to the same graph as 0.6.
+Consequently there are exactly **two distinct graphs**:
+
+- **Large graph** (R_score ≥ 0.5): ~62,863 edges, ~10,358 genes — pairs
+  robust in at least 2/4 conditions.
+- **Small graph** (R_score ≥ 0.6): ~15,384 edges, ~3,441 genes — pairs
+  robust in at least 3/4 conditions.
+
+On future datasets with more strata (e.g. 10 organs), R_score is continuous and
+threshold selection becomes a continuous dial rather than this discrete step
+function. The threshold logic in `build_wgcna_modules()` and the Louvain helper
+accepts any numeric value; only the effective graph count changes.
+
+### ModuleInput method identifier fields
+
+`ModuleInput` now carries three additional metadata fields (set at construction
+time by the official-module script; not produced by the core `build_*` functions
+themselves):
+
+| Field | Type | Values |
+|---|---|---|
+| `$method` | character | `"wgcna_p1"` \| `"louvain"` \| user-defined |
+| `$graph` | character | `"large"` \| `"small"` \| user-defined label |
+| `$r_score_threshold` | numeric | e.g. `0.5`, `0.6` |
+
+See also `docs/OUTPUT_SCHEMA.md` for the updated ModuleInput slot table.
