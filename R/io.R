@@ -61,6 +61,69 @@ load_network_results <- function(output_dir, strata = NULL,
   setNames(result, strata)
 }
 
+#' Build an AT-ID to gene_symbol lookup from a TAIR10 GFF3
+#'
+#' Parses `gene` features from a GFF3 file, extracting the AGI locus ID
+#' (`gene_id` attribute) and the gene symbol (`Name` attribute).
+#' Genes with no `Name` attribute receive `gene_symbol = NA`.
+#'
+#' @param gff3_path Path to the GFF3 file (plain text or `.gz`).
+#' @return `data.frame` with columns `gene_id` (AT-ID, character) and
+#'   `gene_symbol` (character; `NA` where no symbol is annotated).
+#' @export
+build_symbol_map <- function(gff3_path) {
+  if (!file.exists(gff3_path))
+    stop("GFF3 file not found: ", gff3_path)
+
+  con <- if (grepl("\\.gz$", gff3_path, ignore.case = TRUE)) {
+    gzfile(gff3_path, "r")
+  } else {
+    file(gff3_path, "r")
+  }
+  on.exit(close(con), add = TRUE)
+
+  lines <- readLines(con, warn = FALSE)
+  lines <- lines[nchar(lines) > 0L & !startsWith(lines, "#")]
+
+  # Select lines where column 3 (feature type) is exactly "gene"
+  gene_mask  <- grepl("^[^\t]*\t[^\t]*\tgene\t", lines, perl = TRUE)
+  gene_lines <- lines[gene_mask]
+
+  if (length(gene_lines) == 0L)
+    stop("No 'gene' features found in GFF3: ", gff3_path)
+
+  # Extract column 9 (GFF3 attribute string, 0-indexed column 8)
+  attrs <- sub("^(?:[^\t]+\t){8}(.*)", "\\1", gene_lines, perl = TRUE)
+
+  # Pull a key=value attribute; returns NA where the key is absent.
+  # Uses regmatches(attrs, m) — not regmatches(attrs[hit], m[hit]) — because
+  # subsetting m with [ drops the match.length attribute, breaking regmatches.
+  .attr <- function(key) {
+    pattern <- paste0(key, "=([^;]+)")
+    m   <- regexpr(pattern, attrs, perl = TRUE)
+    out <- rep(NA_character_, length(attrs))
+    hit <- m != -1L
+    if (any(hit)) {
+      raw      <- regmatches(attrs, m)   # length = sum(hit); order preserved
+      out[hit] <- sub(paste0(key, "="), "", raw, fixed = TRUE)
+    }
+    out
+  }
+
+  gene_ids     <- .attr("gene_id")
+  gene_symbols <- .attr("Name")
+
+  valid <- !is.na(gene_ids)
+  if (!all(valid))
+    warning(sum(!valid), " gene features had no gene_id attribute and were dropped.")
+
+  data.frame(
+    gene_id     = gene_ids[valid],
+    gene_symbol = gene_symbols[valid],
+    stringsAsFactors = FALSE
+  )
+}
+
 #' Save a list of NetworkResults to disk
 #'
 #' Writes `edge_table.csv` and `params.json` into `{output_dir}/{stratum_id}/`
