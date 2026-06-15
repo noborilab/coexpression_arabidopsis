@@ -376,3 +376,76 @@ Other gaps (non-blocking for pathogen, blocking for new dataset):
   `results/pathogen_multiome/report/PIPELINE_AUDIT.md` for full list)
 - `run_pipeline.R` covers core path but full sweep requires 6+ scripts
   in sequence with human checkpoints — no single orchestrating entry point
+
+---
+
+## Session 2026-06-16 — audit, BLOCKER fixes, report refresh
+
+### BLOCKER closures (this session)
+
+All three BLOCKERs from the prior audit are now FIXED and pushed:
+
+| BLOCKER | Fix | Commit |
+|---|---|---|
+| A: `annotate_context()` hardcoded "Mock" | Added `ref_condition = "Mock"` param; all 5 call sites updated explicitly | e560f21 |
+| B: pattern labels hardcoded pathogen semantics | `pattern_labels = NULL` param; generic "pattern_XXXX" when NULL; pathogen scripts supply explicit `PATTERN_LABELS = c(...)` | 4e787d9 |
+| C: `sub_clst_rna_20260610` in 6 scripts | Added `# dataset-specific: edit for new datasets` comment to all 6 constants | b4d2b0e |
+
+Dev-atlas manual intervention steps: **7 → 5** (A and B now parameterized at call sites).
+
+**Tests after fix**: 327 pass, 0 fail, 0 skip. New tests 13 (explicit label lookup) and 14 (unmapped-with-warning) added for BLOCKER-B.
+
+**Note on BLOCKER-B output change**: Multi-condition patterns not in PATTERN_LABELS (e.g. "1011") now produce "pattern_1011" instead of old "mixed_1011" label. The 8 well-named pathogen patterns are unchanged in output.
+
+### Complete analysis inventory (Phase 0 disk audit, 2026-06-16)
+
+**Two network modes confirmed on disk** — the v1 report (EXECUTIVE_SUMMARY.html) covered ONLY pseudobulk and missed the entire GGM analysis stack.
+
+**GGM mode** (output_per_condition/ + results/pathogen_multiome/robustness/|method_benchmark/|official_modules/):
+- 4 per-condition GGM edge tables (Mock 289k, DC3k 378k, AvrRpt2 381k, AvrRpm1 449k edges)
+- Robustness: 1,413,505 pairs; **R_score saturation at 0.3/0.4/0.5** (all identical: 62,863 edges); jump at 0.6 (15,384 edges)
+- Method benchmark: 6 methods × 5 thresholds (30 cells, all completed); effective distinct networks = 2 (large/small)
+- 4 official GGM module sets: large_wgcna (42M, 68% grey), large_louvain (14M, 8% grey), small_wgcna (26M, 44% grey), small_louvain (15M, 2% grey)
+- Pattern distribution: single-condition pairs dominate (AvrRpm1 > DC3000 > AvrRpt2 > Mock); constitutive_all only 0.3%
+
+**Pseudobulk mode** (results/pathogen_multiome/pseudobulk_zscore_spearman/ + obs_design/ + stage3_threshold_sweep/):
+- 54.2M pairs; |r|≥0.42 → 751,959 pairs / 5,450 genes
+- Official modules: WGCNA 12M (power=9, grey 8.1%) + Louvain 6M (grey 6.6%)
+- All modules dominant pattern "1111" (constitutive) — contrast with GGM (single-condition pairs dominate)
+
+**Newly discovered on disk** (not in prior task context):
+- `results/pathogen_multiome/figures/REPORT.html` (6MB, 2026-06-14): Older GGM-focused HTML report
+- `output_pseudobulk_pathogen/pooled/` (1.2GB): Superseded pooled pseudobulk run
+- `results/pathogen_multiome/official_modules/cross_set_assignments.csv`: Gene→module mapping across all 4 GGM sets
+- `results/pathogen_multiome/official_modules/all_modules_condition_patterns.csv`: Condition patterns for all GGM sets
+- `results/pathogen_multiome/robustness/BON3_condition_patterns.csv`: BON3 GGM analysis
+- 42 UMAP feature plot PNGs in `figures/featureplots/` for GGM modules M1–M42
+
+### Open items updated
+
+1. **Comparison methods**: hdWGCNA / CS-CORE / SuperCell / SEACells — interface ready, not run.
+2. **Dev atlas obs-design sweep**: needs per-dataset sweep (FLAG-08 prerequisite). Dev atlas readiness = 5 manual steps.
+3. ~~**t200 splithalf re-evaluation**~~: DONE — splithalf=0.744.
+4. **Higher-res cluster sweep**: to reach n_pts ≈ 298, resolution ~10-50 would be needed.
+5. ~~**GGM rerun per-condition**~~: COMPLETE.
+6. ~~**Post-hoc BON3/WRKY sanity**~~: COMPLETE (BON3_condition_patterns.csv; WRKY_GGM_vs_PB.csv).
+7. **Module label column**: module_meta label column is NA for all GGM official modules — biological labels not assigned. Should be filled in by lead based on GO + condition context.
+8. **v1 report gap corrected**: v2 report (`results/pathogen_multiome/report/v2/EXECUTIVE_SUMMARY_v2.html`) covers both modes.
+9. ~~**BLOCKER-A/B/C**~~: All FIXED (commits e560f21, 4e787d9, b4d2b0e).
+
+### Future task: pipeline-wide gene-symbol display helper
+
+The report (v2) now shows "symbol (AT-ID)" for readability, but this is a
+report-only display layer. A pipeline-level helper should be added so that
+ALL user-facing outputs (module membership, hub genes, GOI lookups, condition
+profiles, etc.) optionally carry a gene_symbol column alongside the canonical
+AT-ID.
+- Canonical data stays AT-ID-only (FLAG-04 unchanged): computation and edge
+  tables never use symbols.
+- Add an R/ helper (e.g. `add_display_symbols(df, at_id_col, symbol_map)`)
+  that joins a symbol_map and produces a display-oriented companion column
+  or file, without altering the canonical AT-ID output.
+- Symbol map source: `results/.../symbol_map.csv` (dataset-specific; must be
+  parameterized for new datasets, same pattern as the BLOCKER-C fix).
+- Handle multi-symbol collisions deterministically; never fabricate symbols.
+Apply going forward to all new analyses.
