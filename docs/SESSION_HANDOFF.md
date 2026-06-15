@@ -227,7 +227,7 @@ candidates <- c(
   Louvain 6 modules, WGCNA-test 22 modules. Treat as preliminary only.
   Rebuild after threshold selection.
 - pickSoftThreshold for WGCNA: deferred to after threshold confirmed.
-- GGM rerun (per-condition, full gene universe): still pending (RERUN_PLAN.md).
+- GGM rerun per-condition full gene universe: COMPLETE (output_per_condition/, 4 conditions, 2026-06-13/14, AT-IDs, n_iter~8435, wall_time~53min/condition). FLAG-05/06 resolved.
 
 ### Stage 3 final decision (added post-sweep)
 Edge threshold confirmed: global |r| = tanh(z_bar) ≥ 0.42
@@ -253,7 +253,7 @@ Next steps:
       WGCNA with pickSoftThreshold (deferred from session)
       Louvain (replace modules_absr042 with official run)
   - metacell sweep (FLAG-14, still pending)
-  - GGM rerun per-condition full gene universe (RERUN_PLAN.md)
+  - GGM rerun per-condition full gene universe: COMPLETE (output_per_condition/, FLAG-05/06 resolved)
 
 ---
 
@@ -343,5 +343,5 @@ t25 (0.878) is only 1.9% below subcluster (0.895). At n_pts ≈ 5000-10000, meta
 2. **Dev atlas obs-design sweep**: needs per-dataset sweep (FLAG-08 prerequisite).
 3. **t200 splithalf re-evaluation**: apply harness fix and re-run if stability for this design matters.
 4. **Higher-res cluster sweep**: to reach n_pts ≈ 298, resolution ~10-50 would be needed.
-5. **GGM rerun** per-condition full gene universe (FLAG-05/06, RERUN_PLAN.md).
+5. **GGM rerun** per-condition full gene universe: COMPLETE (output_per_condition/, FLAG-05/06 resolved).
 6. **Post-hoc BON3/WRKY sanity**: run on subcluster design (blocked by metacell sweep earlier).
