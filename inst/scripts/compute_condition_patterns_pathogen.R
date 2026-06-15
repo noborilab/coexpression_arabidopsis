@@ -10,6 +10,16 @@ RESULTS_DIR <- file.path("results", DATASET_ID)
 ROB_DIR     <- file.path(RESULTS_DIR, "robustness")
 CONDITIONS  <- c("Mock", "DC3000", "AvrRpt2", "AvrRpm1")
 
+# Condition-pattern labels for this dataset. Supply to characterize_condition_pattern().
+# For a new dataset, replace with labels appropriate to your condition set.
+# Patterns not listed here fall back to the generic "pattern_<bits>" label.
+PATTERN_LABELS <- c(
+  "0000" = "none",           "1111" = "constitutive_all",
+  "1000" = "single_Mock",    "0100" = "single_DC3000",
+  "0010" = "single_AvrRpt2", "0001" = "single_AvrRpm1",
+  "0111" = "pan_pathogen",   "0011" = "ETI_shared"
+)
+
 # ---------------------------------------------------------------------------
 message("\n=== Loading inputs ===")
 
@@ -27,7 +37,8 @@ message("network_list: ", length(network_list), " conditions")
 message("\n=== characterize_condition_pattern() ===")
 t0 <- proc.time()
 
-cp <- characterize_condition_pattern(rob, network_list, condition_order = CONDITIONS)
+cp <- characterize_condition_pattern(rob, network_list, condition_order = CONDITIONS,
+                                     pattern_labels = PATTERN_LABELS)
 
 elapsed <- (proc.time() - t0)[["elapsed"]]
 message(sprintf("Done in %.1f s — %d pairs x %d conditions", elapsed, nrow(cp), 4L))

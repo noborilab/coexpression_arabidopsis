@@ -403,7 +403,8 @@ test_that("characterize_condition_pattern: AvrRpm1-only pair → pattern 0001, s
 
   row <- cp[idx, ]
   expect_equal(row$pattern,       "0001", info = "Pattern should be 0001 (only AvrRpm1 active)")
-  expect_equal(row$pattern_label, "single_AvrRpm1")
+  # Generic label when pattern_labels = NULL (default)
+  expect_equal(row$pattern_label, "pattern_0001")
   expect_equal(row$n_conditions_active, 1L)
   expect_equal(row$w_Mock,    0.0, tolerance = 1e-9)
   expect_equal(row$w_DC3000,  0.0, tolerance = 1e-9)
@@ -411,4 +412,50 @@ test_that("characterize_condition_pattern: AvrRpm1-only pair → pattern 0001, s
   expect_equal(row$w_AvrRpm1, 0.5, tolerance = 1e-9)
   # specificity_index = (0.5 - 0) / (0.5 + 1e-6) ≈ 0.9999980
   expect_gt(row$specificity_index, 0.99)
+})
+
+# ---------------------------------------------------------------------------
+# Test 13 – pattern_labels lookup applied when supplied
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: pattern_labels lookup applied when supplied", {
+  fix <- .build_ccp_fixture()
+  pathogen_labels <- c(
+    "0000" = "none",           "1111" = "constitutive_all",
+    "1000" = "single_Mock",    "0100" = "single_DC3000",
+    "0010" = "single_AvrRpt2", "0001" = "single_AvrRpm1",
+    "0111" = "pan_pathogen",   "0011" = "ETI_shared"
+  )
+  cp <- characterize_condition_pattern(fix$rob, fix$nl,
+                                       pattern_labels = pathogen_labels)
+
+  row_0001 <- cp[cp$gene_id_A == "AT1G00010" & cp$gene_id_B == "AT1G00030", ]
+  expect_equal(row_0001$pattern_label, "single_AvrRpm1")
+
+  row_1111 <- cp[cp$gene_id_A == "AT1G00010" & cp$gene_id_B == "AT1G00020", ]
+  expect_equal(row_1111$pattern_label, "constitutive_all")
+
+  row_0111 <- cp[cp$gene_id_A == "AT1G00010" & cp$gene_id_B == "AT1G00040", ]
+  expect_equal(row_0111$pattern_label, "pan_pathogen")
+
+  row_0011 <- cp[cp$gene_id_A == "AT1G00020" & cp$gene_id_B == "AT1G00030", ]
+  expect_equal(row_0011$pattern_label, "ETI_shared")
+})
+
+# ---------------------------------------------------------------------------
+# Test 14 – unmapped patterns get generic label with warning
+# ---------------------------------------------------------------------------
+
+test_that("characterize_condition_pattern: unmapped pattern gets generic label + warning", {
+  fix <- .build_ccp_fixture()
+  # Incomplete lookup: only maps "1111" → "constitutive_all"
+  partial_labels <- c("1111" = "constitutive_all")
+  expect_warning(
+    cp <- characterize_condition_pattern(fix$rob, fix$nl,
+                                          pattern_labels = partial_labels),
+    "not in pattern_labels"
+  )
+  # The unmapped "0001" pair should get the generic label
+  row_0001 <- cp[cp$gene_id_A == "AT1G00010" & cp$gene_id_B == "AT1G00030", ]
+  expect_equal(row_0001$pattern_label, "pattern_0001")
 })

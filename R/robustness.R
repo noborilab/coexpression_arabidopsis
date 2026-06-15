@@ -267,18 +267,29 @@ save_robustness <- function(rob, outdir) {
 #' Produces BOTH a discrete binary pattern label and the continuous
 #' per-condition effect sizes, so pairs can be grouped by pattern OR clustered
 #' on the continuous matrix. The discrete pattern is derived mechanically from
-#' the I_s indicators already present in `rob$pair_scores`. Named labels
-#' ("pan_pathogen", "ETI_shared", etc.) are convenient handles for bit patterns;
-#' they do not imply any biological interpretation.
+#' the I_s indicators already present in `rob$pair_scores`.
 #'
-#' **Pattern label lookup (default 4-condition order
-#' Mock / DC3000 / AvrRpt2 / AvrRpm1):**
-#' - `"1111"` → `"constitutive_all"`
-#' - `"0111"` → `"pan_pathogen"` (DC3000 + AvrRpt2 + AvrRpm1, not Mock)
-#' - `"0011"` → `"ETI_shared"` (AvrRpt2 + AvrRpm1)
-#' - `"0000"` → `"none"`
-#' - Single-bit patterns → `"single_<condition>"`
-#' - All other patterns → `"mixed_<pattern>"`
+#' **Pattern label behaviour:**
+#' - When `pattern_labels = NULL` (default): all patterns receive a generic
+#'   label of the form `"pattern_<bits>"` (e.g. `"pattern_1111"`,
+#'   `"pattern_0001"`). No biology-specific strings are ever embedded in the
+#'   library function.
+#' - When `pattern_labels` is supplied: each pattern code is looked up in the
+#'   named vector; any pattern not present in the lookup gets the generic
+#'   `"pattern_<bits>"` label and a warning is emitted. Caller is responsible
+#'   for supplying biologically meaningful labels appropriate to their dataset.
+#'
+#' **Pathogen multiome usage** (in the runner scripts):
+#' ```r
+#' PATTERN_LABELS <- c(
+#'   "0000" = "none",          "1111" = "constitutive_all",
+#'   "1000" = "single_Mock",   "0100" = "single_DC3000",
+#'   "0010" = "single_AvrRpt2","0001" = "single_AvrRpm1",
+#'   "0111" = "pan_pathogen",  "0011" = "ETI_shared"
+#' )
+#' cp <- characterize_condition_pattern(rob, network_list,
+#'         condition_order = CONDITIONS, pattern_labels = PATTERN_LABELS)
+#' ```
 #'
 #' **Specificity index:** `(w_max - w_mean_of_others) / (w_max + epsilon)`,
 #' where `w_mean_of_others = (sum(w) - w_max) / (S - 1)` and `epsilon = 1e-6`.
@@ -292,17 +303,22 @@ save_robustness <- function(rob, outdir) {
 #'   list are treated as weight = 0 for all pairs.
 #' @param condition_order Character vector fixing the bit order for the pattern
 #'   string. Default `c("Mock","DC3000","AvrRpt2","AvrRpm1")`.
+#' @param pattern_labels Optional named character vector mapping bit-pattern
+#'   codes (e.g. `"0111"`) to human-readable labels. `NULL` (default) produces
+#'   generic `"pattern_<bits>"` labels for all patterns. Any pattern not found
+#'   in the lookup gets the generic label and triggers a warning.
 #' @return `data.frame`, one row per pair in `rob$pair_scores`, with columns:
 #'   `gene_id_A`, `gene_id_B`;
 #'   `I_<condition>` (integer 0/1, from rob);
 #'   `pattern` (S-character bit string in condition_order);
-#'   `pattern_label` (category string);
+#'   `pattern_label` (category string; see `pattern_labels` parameter);
 #'   `n_conditions_active` (integer 0–S);
 #'   `w_<condition>` (pcor weight from per-condition network, or 0 if absent);
 #'   `w_max`, `w_min`, `w_range`, `w_mean`, `specificity_index`.
 #' @export
 characterize_condition_pattern <- function(rob, network_list,
-  condition_order = c("Mock", "DC3000", "AvrRpt2", "AvrRpm1")) {
+  condition_order = c("Mock", "DC3000", "AvrRpt2", "AvrRpm1"),
+  pattern_labels  = NULL) {
 
   ps <- rob$pair_scores
   S  <- length(condition_order)
@@ -339,24 +355,26 @@ characterize_condition_pattern <- function(rob, network_list,
 
   pattern <- apply(I_mat, 1L, paste, collapse = "")
 
-  # Assign labels (at most 2^S distinct patterns; map built on unique ones only)
-  .pat_label <- function(p) {
-    bits     <- as.integer(strsplit(p, "")[[1]])
-    n_active <- sum(bits, na.rm = TRUE)
-    if (n_active == 0L) return("none")
-    if (n_active == S)  return("constitutive_all")
-    if (n_active == 1L) return(paste0("single_", condition_order[which(bits == 1L)]))
-    if (S == 4L &&
-        identical(condition_order, c("Mock", "DC3000", "AvrRpt2", "AvrRpm1"))) {
-      if (p == "0111") return("pan_pathogen")
-      if (p == "0011") return("ETI_shared")
-    }
-    paste0("mixed_", p)
+  # Build label map from unique patterns.
+  # When pattern_labels is supplied: use lookup; generic "pattern_<bits>" for unmapped.
+  # When pattern_labels is NULL:     use generic "pattern_<bits>" for all patterns.
+  unique_pats <- unique(pattern)
+  if (!is.null(pattern_labels)) {
+    unmapped <- setdiff(unique_pats, names(pattern_labels))
+    if (length(unmapped) > 0L)
+      warning("characterize_condition_pattern: ", length(unmapped),
+              " pattern(s) not in pattern_labels; using generic 'pattern_<bits>': ",
+              paste(unmapped, collapse = ", "))
+    label_map <- setNames(
+      vapply(unique_pats, function(p) {
+        if (p %in% names(pattern_labels)) pattern_labels[[p]]
+        else paste0("pattern_", p)
+      }, character(1L)),
+      unique_pats
+    )
+  } else {
+    label_map <- setNames(paste0("pattern_", unique_pats), unique_pats)
   }
-
-  unique_pats   <- unique(pattern)
-  label_map     <- setNames(vapply(unique_pats, .pat_label, character(1)),
-                            unique_pats)
   pattern_label <- unname(label_map[pattern])
 
   n_conditions_active <- rowSums(I_mat, na.rm = TRUE)
