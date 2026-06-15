@@ -1,303 +1,425 @@
-#' @title Stage 3 Threshold Evaluation Adapters
+#' @title Stage 3 Threshold Evaluation Adapters (obs-point basis)
 #'
 #' @description
-#' Thin adapters that allow the prior-free metrics from `coexpr_eval.R` to
-#' evaluate THRESHOLDED NETWORKS rather than ObsPointSet / InputBundle objects.
+#' Prior-free evaluation of thresholded co-expression networks using the SAME
+#' obs-point axis as Stage 1/2 (genes × 298 pseudobulk profiles), not the
+#' 4-condition fingerprint matrix used in the prior (invalid) Phase 2.
 #'
-#' **Stage 3 context:** The 4 pathogen conditions (Mock / DC3000 / AvrRpt2 /
-#' AvrRpm1) play the role of "observation points." Each adapter builds a
-#' **genes × 4-conditions fingerprint matrix** where entry [g, c] is the mean
-#' signed Spearman r between gene g and all its retained network neighbours in
-#' condition c. This matrix is passed to the corresponding `coexpr_eval.R`
-#' function unchanged; only the *input construction* differs from the
-#' ObsPointSet path.
+#' All five functions share the same input contract:
+#' - `obs`:      ObsPointSet produced by obs_subcluster + normalize_obs.
+#'               `obs$matrix` must be genes × n_obs_points (genes in rownames).
+#' - `edges_dt`: data.table with at minimum columns `gene_id_A`, `gene_id_B`,
+#'               and `mean_abs_r` (the retaining threshold's basis).
+#' - `min_abs_r` / `top_k`: exactly one non-NULL (the threshold lever).
 #'
-#' **Metric interpretations in Stage 3:**
-#' - `eval_splithalf`  → Jaccard stability when conditions split 2+2 (3 unique
-#'   complementary splits); each half's retained edges are those above the
-#'   threshold / in the top-k for the half-specific mean |r|.
-#' - `eval_effective_rank` → participation ratio of singular values of the
-#'   fingerprint matrix; higher = network fingerprints vary along more
-#'   independent axes across conditions (≤ 4 by construction with 4 conditions).
-#' - `eval_null_gap`   → fraction of gene-pair fingerprint correlations above
-#'   0.3 in real vs. row-permuted fingerprint matrix (gene subsample ≤ 2000).
-#' - `eval_heldout_predictivity` → leave-one-condition-out GBA R² on the
-#'   fingerprint matrix (4-fold CV, 500-gene subsample guard preserved).
-#' - `eval_visible_genes` → non-isolated genes with ≥ 1 retained edge.
-#'
-#' **What is NOT adapted (and why):**
-#' - `eval_downsample_depth`  — requires raw count matrix; N/A.
-#' - `eval_downsample_cells`  — requires raw cell matrix; N/A.
-#' - `eval_depth_leakage`     — depth confounding is pre-adjusted; not a
-#'   threshold design dimension.
+#' **No data.table GForce operations anywhere** — this machine (aarch64-darwin)
+#' segfaults on frank(by=), dt[group,.()], unique(by=), and dt[bool_expr] on
+#' large tables. All operations use base-R: rank(), apply(), ave(), which(),
+#' rowSums(), rowMeans(), svd(), cor(), and plain matrix indexing.
 #'
 #' @name stage3_threshold_eval
 NULL
 
-# ---------------------------------------------------------------------------
-# Internal helper: build genes × conditions fingerprint matrix
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Build a genes × conditions fingerprint matrix
+#' Compute a genes×genes Spearman correlation matrix from a column subset.
 #'
-#' For each gene g and condition c the fingerprint value is the mean signed
-#' Spearman r between g and all its retained network neighbours in condition c.
-#' Computed from `edges_dt` which must contain per-condition r columns.
-#'
-#' @param edges_dt data.table with columns `gene_id_A`, `gene_id_B`, and one
-#'   numeric column per condition in `cor_cols`.
-#' @param cor_cols Character vector naming the per-condition r columns.
-#' @return List with `$matrix` (genes × conditions) and `$gene_ids`.
+#' Uses BLAS matrix multiplication on rank-normalized rows, avoiding the O(n²)
+#' memory overhead of computing all gene-pair correlations one by one.
+#' Input: `mat` (genes × n_pts), `col_idx` (integer column positions to use).
+#' Returns: symmetric genes×genes matrix of Spearman correlations.
 #' @keywords internal
-.stage3_fingerprint <- function(edges_dt,
-                                 cor_cols = c("r_Mock", "r_DC3000",
-                                              "r_AvrRpt2", "r_AvrRpm1")) {
-  if (nrow(edges_dt) == 0L) {
-    m <- matrix(numeric(0), nrow = 0L, ncol = length(cor_cols),
-                dimnames = list(NULL, cor_cols))
-    return(list(matrix = m, gene_ids = character(0L),
-                design = list(name = "stage3_network")))
-  }
+.s3_spearman_mat <- function(mat, col_idx) {
+  sub <- mat[, col_idx, drop = FALSE]
+  # Rank each gene (row) independently across the selected obs-points
+  rk  <- t(apply(sub, 1L, rank))      # genes × n_cols
+  # Center rows and normalize to unit length
+  rc  <- rk - rowMeans(rk)
+  ss  <- sqrt(rowSums(rc^2))
+  ss[ss < 1e-12] <- 1e-12
+  rn  <- rc / ss                       # unit-row matrix
+  # Spearman ≡ Pearson of ranked = rn %*% t(rn) via BLAS
+  rn %*% t(rn)
+}
 
-  genes_in_net <- sort(unique(c(edges_dt$gene_id_A, edges_dt$gene_id_B)))
-  n_genes <- length(genes_in_net)
-  n_conds <- length(cor_cols)
+#' Extract pair correlations from a square matrix using integer index pairs.
+#' @keywords internal
+.s3_extract_pairs <- function(cor_mat, iA, iB) cor_mat[cbind(iA, iB)]
 
-  mat <- matrix(0, nrow = n_genes, ncol = n_conds,
-                dimnames = list(genes_in_net, cor_cols))
-  cnt <- matrix(0L, nrow = n_genes, ncol = n_conds)
+#' Per-gene top-k union mask (base-R ave, no data.table frank/GForce).
+#' Returns logical: TRUE if pair is in top-k by |r| for gene_A OR gene_B.
+#' @keywords internal
+.s3_topk_mask <- function(abs_r_vals, gA, gB, k) {
+  rk_A <- ave(-abs_r_vals, gA, FUN = rank)
+  rk_B <- ave(-abs_r_vals, gB, FUN = rank)
+  ((rk_A <= k) | (rk_B <= k)) & !is.na(abs_r_vals)
+}
 
-  gene_idx <- setNames(seq_len(n_genes), genes_in_net)
-  idx_A    <- gene_idx[edges_dt$gene_id_A]
-  idx_B    <- gene_idx[edges_dt$gene_id_B]
+#' Subset obs$matrix to visible genes and build integer indices for candidate pairs.
+#' Returns list: mat, gA, gB, iA, iB (only pairs where both genes are in obs).
+#' @keywords internal
+.s3_net_subset <- function(obs, edges_dt) {
+  mat_full <- obs$matrix
+  net_g    <- sort(unique(c(edges_dt$gene_id_A, edges_dt$gene_id_B)))
+  avail    <- rownames(mat_full) %in% net_g
+  mat      <- mat_full[avail, , drop = FALSE]
+  g_names  <- rownames(mat)
+  gidx     <- setNames(seq_len(nrow(mat)), g_names)
 
-  for (ci in seq_len(n_conds)) {
-    r_vals <- edges_dt[[cor_cols[ci]]]
-    # Both directions: A's neighbour B and B's neighbour A
-    for (grp in list(list(idx = idx_A, r = r_vals),
-                     list(idx = idx_B, r = r_vals))) {
-      ok      <- !is.na(grp$r)
-      s_names <- tapply(grp$r[ok], grp$idx[ok], sum, na.rm = TRUE)
-      c_tab   <- tabulate(grp$idx[ok], nbins = n_genes)
-      row_ids <- as.integer(names(s_names))
-      mat[row_ids, ci] <- mat[row_ids, ci] + s_names
-      cnt[, ci]        <- cnt[, ci] + c_tab
+  ok <- edges_dt$gene_id_A %in% g_names & edges_dt$gene_id_B %in% g_names
+  gA <- edges_dt$gene_id_A[ok]
+  gB <- edges_dt$gene_id_B[ok]
+  iA <- gidx[gA]
+  iB <- gidx[gB]
+
+  list(mat = mat, gA = gA, gB = gB, iA = iA, iB = iB,
+       n_missing = sum(!ok))
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. stage3_eval_splithalf
+# ─────────────────────────────────────────────────────────────────────────────
+
+#' Split-half stability on the obs-point axis
+#'
+#' For each rep: randomly splits the n_obs_points obs-point columns into two
+#' equal halves, computes the genes×genes Spearman correlation matrix from each
+#' half independently, applies the threshold (global |r| or per-gene top-k),
+#' and reports Jaccard of the retained edge sets (primary) plus Pearson of the
+#' full upper-triangle correlation structures (secondary).
+#'
+#' @param obs ObsPointSet; obs$matrix must be genes × n_obs_points with gene
+#'   IDs as rownames.
+#' @param edges_dt data.table: gene_id_A, gene_id_B, mean_abs_r.
+#' @param min_abs_r Numeric; global |r| threshold (Lever A). Exactly one of
+#'   min_abs_r or top_k must be non-NULL.
+#' @param top_k Integer; per-gene top-k threshold (Lever B).
+#' @param n_reps Integer; number of random split-half replicates. Default 5.
+#' @param seed Integer RNG seed. Default 98.
+#' @return data.frame: splithalf_jaccard, splithalf_pearson, splithalf_jaccard_sd,
+#'   n_reps (effective reps completed).
+#' @export
+stage3_eval_splithalf <- function(obs, edges_dt,
+                                  min_abs_r = NULL, top_k    = NULL,
+                                  n_reps    = 5L,   seed     = 98L) {
+  if (is.null(min_abs_r) == is.null(top_k))
+    stop("stage3_eval_splithalf: exactly one of min_abs_r or top_k must be set.")
+
+  ns    <- .s3_net_subset(obs, edges_dt)
+  mat   <- ns$mat
+  gA    <- ns$gA;  gB <- ns$gB
+  iA    <- ns$iA;  iB <- ns$iB
+  n_pts <- ncol(mat)
+  half  <- floor(n_pts / 2L)
+  n_genes <- nrow(mat)
+
+  if (nrow(mat) < 2L || n_pts < 4L || length(iA) == 0L)
+    return(data.frame(splithalf_jaccard    = NA_real_,
+                      splithalf_pearson    = NA_real_,
+                      splithalf_jaccard_sd = NA_real_,
+                      n_reps               = 0L))
+
+  set.seed(seed)
+  jacs  <- numeric(n_reps)
+  pears <- numeric(n_reps)
+  n_ok  <- 0L
+
+  for (rep in seq_len(n_reps)) {
+    perm  <- sample.int(n_pts)
+    cols1 <- perm[seq_len(half)]
+    cols2 <- perm[seq(half + 1L, n_pts)]
+
+    cm1 <- .s3_spearman_mat(mat, cols1)
+    cm2 <- .s3_spearman_mat(mat, cols2)
+
+    r1 <- .s3_extract_pairs(cm1, iA, iB)
+    r2 <- .s3_extract_pairs(cm2, iA, iB)
+
+    if (!is.null(min_abs_r)) {
+      in1 <- !is.na(r1) & abs(r1) >= min_abs_r
+      in2 <- !is.na(r2) & abs(r2) >= min_abs_r
+    } else {
+      in1 <- .s3_topk_mask(abs(r1), gA, gB, top_k)
+      in2 <- .s3_topk_mask(abs(r2), gA, gB, top_k)
+    }
+
+    n_int <- sum(in1 & in2)
+    n_uni <- sum(in1 | in2)
+    jac   <- if (n_uni == 0L) NA_real_ else n_int / n_uni
+
+    # Pearson of upper-tri: proxy via candidate pairs (memory-safe for large n)
+    # For n_genes <= 5000 use full upper-tri; otherwise use candidate-pair proxy.
+    if (n_genes <= 5000L) {
+      ut   <- upper.tri(cm1, diag = FALSE)
+      pear <- tryCatch(stats::cor(cm1[ut], cm2[ut]),
+                       error = function(e) NA_real_)
+    } else {
+      pear <- tryCatch(stats::cor(r1, r2), error = function(e) NA_real_)
+    }
+
+    rm(cm1, cm2); gc(verbose = FALSE)
+
+    if (!is.na(jac)) {
+      n_ok        <- n_ok + 1L
+      jacs[n_ok]  <- jac
+      pears[n_ok] <- if (is.finite(pear)) pear else NA_real_
     }
   }
 
-  # Mean = sum / count; 0-count genes stay 0 (safe divisor via pmax)
-  cnt_safe <- pmax(cnt, 1L)
-  mat      <- mat / cnt_safe
+  if (n_ok == 0L)
+    return(data.frame(splithalf_jaccard    = NA_real_,
+                      splithalf_pearson    = NA_real_,
+                      splithalf_jaccard_sd = NA_real_,
+                      n_reps               = 0L))
 
-  list(matrix = mat, gene_ids = genes_in_net,
-       design = list(name = "stage3_network"))
+  data.frame(
+    splithalf_jaccard    = mean(jacs[seq_len(n_ok)]),
+    splithalf_pearson    = mean(pears[seq_len(n_ok)], na.rm = TRUE),
+    splithalf_jaccard_sd = if (n_ok > 1L) stats::sd(jacs[seq_len(n_ok)]) else NA_real_,
+    n_reps               = as.integer(n_ok)
+  )
 }
 
-# ---------------------------------------------------------------------------
-# stage3_eval_visible_genes
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. stage3_eval_effective_rank
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Non-isolated gene count for a thresholded network
+#' Effective rank of the obs-point matrix masked to visible genes
 #'
-#' @param edges_dt data.table with columns `gene_id_A` and `gene_id_B`.
-#' @param n_total Integer; total gene universe size. Default `11010L`.
-#' @return One-row data.frame: `n_visible`, `n_total`, `frac_visible`.
+#' Subsets obs$matrix to genes with ≥1 retained edge at this threshold and
+#' computes the participation ratio of singular values of the masked genes×298
+#' matrix: eff_rank = (Σ sᵢ)² / Σ sᵢ².  Can range up to min(n_visible, 298).
+#'
+#' @param obs ObsPointSet.
+#' @param edges_dt data.table: gene_id_A, gene_id_B, mean_abs_r.
+#' @return data.frame: eff_rank, n_visible, n_points.
 #' @export
-stage3_eval_visible_genes <- function(edges_dt, n_total = 11010L) {
-  if (nrow(edges_dt) == 0L)
-    return(data.frame(n_visible = 0L, n_total = n_total, frac_visible = 0))
+stage3_eval_effective_rank <- function(obs, edges_dt) {
+  net_genes <- unique(c(edges_dt$gene_id_A, edges_dt$gene_id_B))
+  mat_full  <- obs$matrix
+  avail     <- rownames(mat_full) %in% net_genes
+  mat_vis   <- mat_full[avail, , drop = FALSE]
 
-  n_visible <- length(unique(c(edges_dt$gene_id_A, edges_dt$gene_id_B)))
-  data.frame(n_visible    = as.integer(n_visible),
-             n_total      = as.integer(n_total),
-             frac_visible = n_visible / n_total)
+  n_vis <- nrow(mat_vis)
+  n_pts <- ncol(mat_vis)
+
+  if (n_vis < 2L || n_pts < 2L)
+    return(data.frame(eff_rank  = NA_real_,
+                      n_visible = as.integer(n_vis),
+                      n_points  = as.integer(n_pts)))
+
+  mat_c <- mat_vis - rowMeans(mat_vis)    # center genes across obs-points
+  sv    <- tryCatch(svd(mat_c, nu = 0L, nv = 0L)$d,
+                    error = function(e) numeric(0L))
+  sv    <- sv[sv > 0]
+
+  er <- if (length(sv) == 0L) NA_real_ else (sum(sv))^2 / sum(sv^2)
+
+  data.frame(eff_rank  = er,
+             n_visible = as.integer(n_vis),
+             n_points  = as.integer(n_pts))
 }
 
-# ---------------------------------------------------------------------------
-# stage3_eval_effective_rank
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. stage3_eval_heldout
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Effective rank of the genes × conditions fingerprint matrix
+#' Cross-validated guilt-by-association R² on the obs-point axis
 #'
-#' Calls `eval_effective_rank` on the fingerprint. Maximum possible value is
-#' `length(cor_cols)` (= 4 for four conditions).
+#' 5-fold CV partitioning the 298 obs-point columns.  For each fold:
+#' (1) compute Spearman on training obs-points, (2) apply the threshold to get
+#' retained edges, (3) for each gene predict its test-fold expression from its
+#' retained network neighbours via weighted mean (weights = |train Spearman|),
+#' (4) compute per-gene R² clipped to [-1, 1].  Returns the mean across all
+#' folds and all genes with at least one retained neighbour.
 #'
-#' @inheritParams .stage3_fingerprint
-#' @return One-row data.frame: `eff_rank`, `n_points`, `n_genes`.
+#' @param obs ObsPointSet.
+#' @param edges_dt data.table: gene_id_A, gene_id_B, mean_abs_r.
+#' @param min_abs_r Numeric or NULL (Lever A).
+#' @param top_k Integer or NULL (Lever B).
+#' @param n_folds Integer; CV folds. Default 5.
+#' @param seed Integer RNG seed. Default 98.
+#' @return data.frame: heldout_r2.
 #' @export
-stage3_eval_effective_rank <- function(edges_dt,
-                                        cor_cols = c("r_Mock", "r_DC3000",
-                                                     "r_AvrRpt2", "r_AvrRpm1")) {
-  obs <- .stage3_fingerprint(edges_dt, cor_cols)
-  eval_effective_rank(obs)
+stage3_eval_heldout <- function(obs, edges_dt,
+                                min_abs_r = NULL, top_k    = NULL,
+                                n_folds   = 5L,   seed     = 98L) {
+  if (is.null(min_abs_r) == is.null(top_k))
+    stop("stage3_eval_heldout: exactly one of min_abs_r or top_k must be set.")
+
+  ns      <- .s3_net_subset(obs, edges_dt)
+  mat     <- ns$mat
+  gA      <- ns$gA;  gB <- ns$gB
+  iA      <- ns$iA;  iB <- ns$iB
+  n_genes <- nrow(mat);  n_pts <- ncol(mat)
+
+  if (n_genes < 2L || n_pts < 4L || length(iA) == 0L)
+    return(data.frame(heldout_r2 = NA_real_))
+
+  set.seed(seed)
+  fold_ids <- sample(rep(seq_len(n_folds), length.out = n_pts))
+  all_r2   <- numeric(0L)
+
+  for (fold in seq_len(n_folds)) {
+    train_idx <- which(fold_ids != fold)
+    test_idx  <- which(fold_ids == fold)
+    if (length(train_idx) < 2L || length(test_idx) < 1L) next
+
+    # Spearman on training columns
+    cm_tr   <- .s3_spearman_mat(mat, train_idx)
+    r_tr    <- .s3_extract_pairs(cm_tr, iA, iB)
+    rm(cm_tr); gc(verbose = FALSE)
+
+    # Apply threshold
+    if (!is.null(min_abs_r)) {
+      retained <- !is.na(r_tr) & abs(r_tr) >= min_abs_r
+    } else {
+      retained <- .s3_topk_mask(abs(r_tr), gA, gB, top_k)
+    }
+    if (!any(retained, na.rm = TRUE)) next
+
+    iA_r <- iA[retained];  iB_r <- iB[retained]
+    w_r  <- abs(r_tr[retained])
+
+    mat_test <- mat[, test_idx, drop = FALSE]
+    r2_fold  <- rep(NA_real_, n_genes)
+
+    # Build adjacency: for gene g as target, collect (source, weight) via split()
+    # Both directions: predict B from A, and A from B.
+    tgt_all <- c(iB_r, iA_r)
+    src_all <- c(iA_r, iB_r)
+    w_all   <- c(w_r,  w_r)
+
+    # Group by target gene (base-R split — no data.table)
+    grps <- split(
+      data.frame(src = src_all, w = w_all, stringsAsFactors = FALSE),
+      tgt_all
+    )
+
+    for (g_str in names(grps)) {
+      g      <- as.integer(g_str)
+      rec    <- grps[[g_str]]
+      w_sum  <- sum(rec$w)
+      if (w_sum < 1e-10) next
+
+      w_norm <- rec$w / w_sum
+      pred   <- as.numeric(w_norm %*% mat_test[rec$src, , drop = FALSE])
+      actual <- mat_test[g, ]
+      ss_tot <- sum((actual - mean(actual))^2)
+      if (ss_tot < 1e-10) next
+
+      r2_fold[g] <- pmax(-1, pmin(1, 1 - sum((actual - pred)^2) / ss_tot))
+    }
+
+    rm(mat_test, grps); gc(verbose = FALSE)
+    all_r2 <- c(all_r2, r2_fold[is.finite(r2_fold)])
+  }
+
+  r2 <- if (length(all_r2) > 0L) mean(all_r2, na.rm = TRUE) else NA_real_
+  if (!is.finite(r2)) r2 <- NA_real_
+  data.frame(heldout_r2 = r2)
 }
 
-# ---------------------------------------------------------------------------
-# stage3_eval_null_gap
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. stage3_eval_null_gap
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Null-gap ratio for the fingerprint matrix
+#' Real vs. permuted-null edge density on the obs-point axis
 #'
-#' Calls `eval_null_gap` on the fingerprint matrix. To avoid OOM on dense
-#' networks (genes × 4 fingerprint with > 2000 genes), subsamples to at most
-#' `max_genes` genes before computing the n × n correlation matrix.
+#' Computes the Spearman correlation matrix from the full obs-point set for the
+#' visible gene subset, counts the fraction of candidate pairs exceeding the
+#' threshold (real_frac), then repeats on independently row-permuted obs matrices
+#' (destroying cross-gene correlations while preserving per-gene distributions).
+#' null_gap = real_frac / mean(perm_fracs); values >> 1 indicate genuine signal.
 #'
-#' The threshold (default 0.3) is applied to Spearman correlations between
-#' gene fingerprints (not to the original edge |r|), testing whether gene-pair
-#' fingerprints cluster together more than expected under a row-permuted null.
-#'
-#' @inheritParams .stage3_fingerprint
-#' @param n_perm Integer; permutations for the null. Default `10L`.
-#' @param threshold Fingerprint correlation threshold. Default `0.3`.
-#' @param max_genes Integer; gene subsample ceiling. Default `2000L`.
-#' @return One-row data.frame: `null_gap_ratio`, `real_frac`, `perm_frac_mean`.
+#' @param obs ObsPointSet.
+#' @param edges_dt data.table: gene_id_A, gene_id_B, mean_abs_r.
+#' @param min_abs_r Numeric or NULL.
+#' @param top_k Integer or NULL.
+#' @param n_perm Integer; permutations. Default 10.
+#' @param seed Integer. Default 98.
+#' @return data.frame: null_gap, real_frac, perm_frac_mean.
 #' @export
-stage3_eval_null_gap <- function(edges_dt,
-                                  cor_cols  = c("r_Mock", "r_DC3000",
-                                                "r_AvrRpt2", "r_AvrRpm1"),
-                                  n_perm    = 10L,
-                                  threshold = 0.3,
-                                  max_genes = 2000L) {
-  obs <- .stage3_fingerprint(edges_dt, cor_cols)
-  ng  <- nrow(obs$matrix)
+stage3_eval_null_gap <- function(obs, edges_dt,
+                                 min_abs_r = NULL, top_k    = NULL,
+                                 n_perm    = 10L,  seed     = 98L) {
+  if (is.null(min_abs_r) == is.null(top_k))
+    stop("stage3_eval_null_gap: exactly one of min_abs_r or top_k must be set.")
 
-  if (ng < 2L)
-    return(data.frame(null_gap_ratio = NA_real_,
+  ns     <- .s3_net_subset(obs, edges_dt)
+  mat    <- ns$mat
+  gA     <- ns$gA;  gB <- ns$gB
+  iA     <- ns$iA;  iB <- ns$iB
+  n_pts  <- ncol(mat)
+
+  if (nrow(mat) < 2L || n_pts < 2L || length(iA) == 0L)
+    return(data.frame(null_gap       = NA_real_,
                       real_frac      = NA_real_,
                       perm_frac_mean = NA_real_))
 
-  # Subsample to avoid O(n²) OOM with large networks
-  if (ng > max_genes) {
-    keep <- sort(sample(ng, max_genes))
-    obs$matrix   <- obs$matrix[keep, , drop = FALSE]
-    obs$gene_ids <- obs$gene_ids[keep]
-    message("stage3_eval_null_gap: subsampled to ", max_genes,
-            " genes (from ", ng, ") to bound O(n²) correlation matrix.")
+  .count_frac <- function(m) {
+    cm <- .s3_spearman_mat(m, seq_len(ncol(m)))
+    r  <- .s3_extract_pairs(cm, iA, iB)
+    rm(cm)
+    if (!is.null(min_abs_r)) {
+      mean(abs(r) >= min_abs_r, na.rm = TRUE)
+    } else {
+      mean(.s3_topk_mask(abs(r), gA, gB, top_k), na.rm = TRUE)
+    }
   }
 
-  eval_null_gap(obs, cor_type = "spearman", n_perm = n_perm,
-                threshold = threshold)
+  real_frac <- .count_frac(mat)
+
+  set.seed(seed)
+  perm_fracs <- numeric(n_perm)
+  for (p in seq_len(n_perm)) {
+    # Independently shuffle each gene's expression across obs-points (base-R apply)
+    mat_perm   <- t(apply(mat, 1L, sample))
+    perm_fracs[p] <- .count_frac(mat_perm)
+    rm(mat_perm); gc(verbose = FALSE)
+  }
+
+  pf_mean  <- mean(perm_fracs)
+  null_gap <- if (pf_mean < 1e-10) Inf else real_frac / pf_mean
+
+  data.frame(null_gap       = null_gap,
+             real_frac      = real_frac,
+             perm_frac_mean = pf_mean)
 }
 
-# ---------------------------------------------------------------------------
-# stage3_eval_heldout_predictivity
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. stage3_eval_visible_genes
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Held-out predictivity on the fingerprint matrix
+#' Non-isolated gene count for a thresholded network
 #'
-#' Calls `eval_heldout_predictivity` with leave-one-condition-out CV
-#' (n_folds = 4). The 500-gene subsample guard in the original function is
-#' preserved.
-#'
-#' @inheritParams .stage3_fingerprint
-#' @param k_partners Integer; top-k partners for GBA prediction. Default `10L`.
-#' @return One-row data.frame: `predictivity_mean_r2`, `predictivity_median_r2`.
+#' @param edges_dt data.table with gene_id_A and gene_id_B.
+#' @param n_total Integer; total gene universe size. Default 11010.
+#' @return data.frame: n_visible, n_total, frac_visible.
 #' @export
-stage3_eval_heldout_predictivity <- function(edges_dt,
-                                              cor_cols   = c("r_Mock",
-                                                             "r_DC3000",
-                                                             "r_AvrRpt2",
-                                                             "r_AvrRpm1"),
-                                              k_partners = 10L) {
-  obs <- .stage3_fingerprint(edges_dt, cor_cols)
-  if (nrow(obs$matrix) < 2L || ncol(obs$matrix) < 4L)
-    return(data.frame(predictivity_mean_r2   = NA_real_,
-                      predictivity_median_r2 = NA_real_))
-  eval_heldout_predictivity(obs, k_partners = k_partners,
-                            n_folds  = ncol(obs$matrix),  # 4 = leave-one-out
-                            cor_type = "spearman")
+stage3_eval_visible_genes <- function(edges_dt, n_total = 11010L) {
+  if (nrow(edges_dt) == 0L)
+    return(data.frame(n_visible    = 0L,
+                      n_total      = as.integer(n_total),
+                      frac_visible = 0))
+
+  n_vis <- length(unique(c(edges_dt$gene_id_A, edges_dt$gene_id_B)))
+  data.frame(n_visible    = as.integer(n_vis),
+             n_total      = as.integer(n_total),
+             frac_visible = n_vis / n_total)
 }
 
-# ---------------------------------------------------------------------------
-# stage3_eval_splithalf
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. stage3_eval_louvain (descriptive only — NOT a selection metric)
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Condition-split stability of a thresholded network
+#' Fast Louvain module statistics (descriptive support, not selection)
 #'
-#' Splits the 4 conditions into 3 unique complementary 2+2 pairs and computes
-#' Jaccard similarity of retained edges between the two halves. This tests
-#' whether the same edges survive the threshold when computed on different
-#' condition subsets.
-#'
-#' @param cand_dt data.table of candidate pairs with columns `gene_id_A`,
-#'   `gene_id_B`, and per-condition r columns (`cor_cols`). Must include all
-#'   pairs that plausibly survive the threshold in either half:
-#'   - Lever A: pairs within 0.08 below the design threshold.
-#'   - Lever B: top-200-per-gene candidates (gives ≥ top-100 buffer per half).
-#' @param threshold_r Numeric scalar; global-|r| threshold (Lever A). Exactly
-#'   one of `threshold_r` or `topk` must be set.
-#' @param topk Integer; per-gene top-k (Lever B). Applied per-gene to the
-#'   half-specific mean |r|; union of top-k for each endpoint.
-#' @param cor_cols Character vector of per-condition r column names.
-#' @return One-row data.frame: `splithalf_jaccard`, `splithalf_jaccard_sd`,
-#'   `n_splits`.
-#' @export
-stage3_eval_splithalf <- function(cand_dt,
-                                   threshold_r = NULL,
-                                   topk        = NULL,
-                                   cor_cols    = c("r_Mock", "r_DC3000",
-                                                   "r_AvrRpt2", "r_AvrRpm1")) {
-  if (is.null(threshold_r) == is.null(topk))
-    stop("stage3_eval_splithalf: exactly one of threshold_r or topk must be set.")
-
-  # 3 unique complementary 2+2 splits
-  splits <- list(
-    list(A = 1:2,      B = 3:4),
-    list(A = c(1, 3),  B = c(2, 4)),
-    list(A = c(1, 4),  B = c(2, 3))
-  )
-
-  jaccards <- vapply(splits, function(sp) {
-    r_A <- rowMeans(abs(as.matrix(cand_dt[, cor_cols[sp$A], with = FALSE])),
-                    na.rm = TRUE)
-    r_B <- rowMeans(abs(as.matrix(cand_dt[, cor_cols[sp$B], with = FALSE])),
-                    na.rm = TRUE)
-
-    if (!is.null(threshold_r)) {
-      in_A <- r_A >= threshold_r
-      in_B <- r_B >= threshold_r
-    } else {
-      # Per-gene top-k; union rule: edge retained if in top-k for EITHER endpoint
-      gA <- cand_dt$gene_id_A
-      gB <- cand_dt$gene_id_B
-      # ave: for each group gi, rank() applied to the sub-vector → lower rank = higher |r|
-      rank_A_as_A <- ave(-r_A, gA, FUN = rank)
-      rank_A_as_B <- ave(-r_A, gB, FUN = rank)
-      rank_B_as_A <- ave(-r_B, gA, FUN = rank)
-      rank_B_as_B <- ave(-r_B, gB, FUN = rank)
-
-      in_A <- (rank_A_as_A <= topk) | (rank_A_as_B <= topk)
-      in_B <- (rank_B_as_A <= topk) | (rank_B_as_B <= topk)
-    }
-
-    n_int <- sum(in_A & in_B, na.rm = TRUE)
-    n_uni <- sum(in_A | in_B, na.rm = TRUE)
-    if (n_uni == 0L) NA_real_ else n_int / n_uni
-  }, numeric(1L))
-
-  n_ok <- sum(!is.na(jaccards))
-  data.frame(
-    splithalf_jaccard    = mean(jaccards, na.rm = TRUE),
-    splithalf_jaccard_sd = if (n_ok > 1L) stats::sd(jaccards, na.rm = TRUE)
-                          else NA_real_,
-    n_splits             = as.integer(n_ok)
-  )
-}
-
-# ---------------------------------------------------------------------------
-# stage3_eval_louvain
-# ---------------------------------------------------------------------------
-
-#' Fast Louvain module statistics for a thresholded network
-#'
-#' Runs one-pass Louvain community detection (igraph) on the undirected
-#' network defined by `edges_dt`. Weights are absolute mean |r| values.
-#' Intended as descriptive support, NOT a selection metric.
-#'
-#' @param edges_dt data.table with columns `gene_id_A`, `gene_id_B`, `abs_r`.
-#' @param seed Integer RNG seed. Default `98L`.
-#' @return One-row data.frame: `n_modules`, `grey_rate` (fraction of size-1
-#'   modules), `median_module_size`.
+#' @param edges_dt data.table: gene_id_A, gene_id_B, mean_abs_r (weight).
+#' @param seed Integer. Default 98.
+#' @return data.frame: n_modules, grey_rate, median_module_size.
 #' @export
 stage3_eval_louvain <- function(edges_dt, seed = 98L) {
   if (nrow(edges_dt) == 0L)
@@ -306,7 +428,10 @@ stage3_eval_louvain <- function(edges_dt, seed = 98L) {
                       median_module_size = NA_real_))
 
   g  <- igraph::graph_from_data_frame(
-    edges_dt[, .(gene_id_A, gene_id_B, weight = abs_r)],
+    data.frame(gene_id_A = edges_dt$gene_id_A,
+               gene_id_B = edges_dt$gene_id_B,
+               weight    = edges_dt$mean_abs_r,
+               stringsAsFactors = FALSE),
     directed = FALSE
   )
   set.seed(seed)
