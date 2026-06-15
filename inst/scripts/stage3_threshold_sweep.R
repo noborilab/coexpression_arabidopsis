@@ -14,6 +14,12 @@ suppressPackageStartupMessages({
   library(data.table)
   library(igraph)
 })
+
+# NOTE: data.table's GForce grouped path (dt[grp, .(cols)] and frank(..., by=))
+# SIGSEGVs on this aarch64-darwin machine. fread is safe; all ranking and
+# aggregation below is done in base R (plain vector indexing), NOT grouped
+# data.table.
+
 source("R/coexpr_eval.R")
 source("R/stage3_threshold_eval.R")
 
@@ -34,8 +40,10 @@ COR_FILES <- setNames(
 )
 COR_COLS <- names(COR_FILES)
 
-N_GENES_TOTAL <- 11010L
-N_MAX_PAIRS   <- N_GENES_TOTAL * (N_GENES_TOTAL - 1L) / 2L   # 60 604 545
+# N_GENES_TOTAL and N_MAX_PAIRS are DERIVED from the gene universe present in
+# pair_scores_full.csv during Phase 1 (single fixed denominator for all 9 points).
+N_GENES_TOTAL <- NA_integer_
+N_MAX_PAIRS   <- NA_real_
 
 LEVER_A <- c(0.35, 0.40, 0.42, 0.44, 0.46, 0.50)
 LEVER_B <- c(30L, 50L, 100L)
@@ -71,6 +79,18 @@ append_csv_row <- function(df, path) {
 stamp <- function(msg) {
   cat(format(Sys.time(), "[%H:%M:%S]"), msg, "\n")
   flush.console()
+}
+
+# Per-gene rank (1 = highest abs_r) without data.table frank().
+# frank(by=) segfaults on aarch64-darwin with data.table 1.16.4 + igraph.
+# This pure base-R implementation is safe and ~comparable in speed.
+.rank_within_gene <- function(abs_r_vec, gene_vec) {
+  ord         <- order(gene_vec, -abs_r_vec)
+  grp_lengths <- rle(gene_vec[ord])$lengths
+  rank_in_grp <- unlist(lapply(grp_lengths, seq_len), use.names = FALSE)
+  rank_vec    <- integer(length(abs_r_vec))
+  rank_vec[ord] <- rank_in_grp
+  rank_vec
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,34 +133,57 @@ cat(strrep("═", 70), "\n")
 
 stamp("Reading pair scores (gene_id_A, gene_id_B, z_bar) ...")
 t_p1 <- proc.time()
-dt_pairs <- fread(PAIR_SCORES, select = c("gene_id_A","gene_id_B","z_bar"))
+# nThread=1: multithreaded fread segfaults on this macOS system with 5GB files
+dt_pairs <- fread(PAIR_SCORES, select = c("gene_id_A","gene_id_B","z_bar"), nThread = 1L)
 stamp(paste("Read", nrow(dt_pairs), "pairs in", round(elapsed_secs(t_p1),1), "s"))
 
+# Pull plain base-R vectors; do NOT use grouped data.table (GForce segfaults).
+gA         <- dt_pairs$gene_id_A
+gB         <- dt_pairs$gene_id_B
 # mean |r| = tanh(|z_bar|); cap z_bar at 9.9 to avoid Inf from R_score=1
-dt_pairs[, abs_r := tanh(pmin(abs(z_bar), 9.9))]
+mean_abs_r <- tanh(pmin(abs(dt_pairs$z_bar), 9.9))
+rm(dt_pairs); gc(verbose = FALSE)
 
-# Per-gene ranks (once, reused for all Lever B design points)
-stamp("Computing per-gene ranks for top-k ...")
-dt_pairs[, rank_as_A := frank(-abs_r, ties.method = "first"), by = gene_id_A]
-dt_pairs[, rank_as_B := frank(-abs_r, ties.method = "first"), by = gene_id_B]
+# Derive the gene universe + single fixed density denominator from the data.
+all_genes     <- unique(c(gA, gB))
+N_GENES_TOTAL <- length(all_genes)
+N_MAX_PAIRS   <- N_GENES_TOTAL * (N_GENES_TOTAL - 1) / 2
+stamp(paste("Gene universe:", N_GENES_TOTAL, "genes; density denominator =",
+            format(N_MAX_PAIRS, scientific = FALSE)))
+
+# Per-gene ranks (1 = highest mean_abs_r), base-R, reused for all Lever B points.
+stamp("Computing per-gene ranks for top-k (base-R) ...")
+rank_as_A <- .rank_within_gene(mean_abs_r, gA)
+rank_as_B <- .rank_within_gene(mean_abs_r, gB)
 stamp("Per-gene ranks done.")
 
 density_rows <- vector("list", 9L)
 edge_lists   <- vector("list", 9L)
 
+# Fresh start for the incremental density CSV (avoid duplicate rows on re-run).
+if (file.exists(DENSITY_CSV)) file.remove(DENSITY_CSV)
+
+# Build an edge data.table from a base-R integer index (no grouped data.table).
+.edges_from_idx <- function(idx) {
+  data.table(gene_id_A = gA[idx], gene_id_B = gB[idx], abs_r = mean_abs_r[idx])
+}
+
 # ── Lever A ──────────────────────────────────────────────────────────────────
 cat("\nLever A: global |r| threshold\n")
 for (i in seq_along(LEVER_A)) {
-  thr   <- LEVER_A[i]
-  edges <- dt_pairs[abs_r >= thr, .(gene_id_A, gene_id_B, abs_r)]
-  npairs <- nrow(edges)
+  thr    <- LEVER_A[i]
+  idx    <- which(mean_abs_r >= thr)
+  edges  <- .edges_from_idx(idx)
+  npairs <- length(idx)
   ngenes <- length(unique(c(edges$gene_id_A, edges$gene_id_B)))
   dens   <- npairs / N_MAX_PAIRS
 
-  density_rows[[i]] <- data.frame(lever="A_globalr", param=sprintf("%.2f",thr),
-                                   n_pairs=npairs, n_genes=ngenes, density=dens,
-                                   stringsAsFactors=FALSE)
-  edge_lists[[i]] <- edges
+  row <- data.frame(lever="A_globalr", param=sprintf("%.2f",thr),
+                    n_pairs=npairs, n_genes=ngenes, density=dens,
+                    stringsAsFactors=FALSE)
+  density_rows[[i]] <- row
+  edge_lists[[i]]   <- edges
+  append_csv_row(row, DENSITY_CSV)   # incremental write
   cat(sprintf("  |r|>=%.2f  n_pairs=%d  n_genes=%d  density=%.5f\n",
               thr, npairs, ngenes, dens))
   flush.console()
@@ -149,25 +192,34 @@ for (i in seq_along(LEVER_A)) {
 # ── Lever B ──────────────────────────────────────────────────────────────────
 cat("\nLever B: per-gene top-k (union)\n")
 for (j in seq_along(LEVER_B)) {
-  k     <- LEVER_B[j]
-  edges <- dt_pairs[rank_as_A <= k | rank_as_B <= k,
-                    .(gene_id_A, gene_id_B, abs_r)]
-  npairs <- nrow(edges)
+  k      <- LEVER_B[j]
+  idx    <- which(rank_as_A <= k | rank_as_B <= k)   # union of top-k per endpoint
+  edges  <- .edges_from_idx(idx)
+  npairs <- length(idx)
   ngenes <- length(unique(c(edges$gene_id_A, edges$gene_id_B)))
   dens   <- npairs / N_MAX_PAIRS
 
-  density_rows[[6L + j]] <- data.frame(lever="B_topk", param=as.character(k),
-                                        n_pairs=npairs, n_genes=ngenes, density=dens,
-                                        stringsAsFactors=FALSE)
-  edge_lists[[6L + j]] <- edges
+  row <- data.frame(lever="B_topk", param=as.character(k),
+                    n_pairs=npairs, n_genes=ngenes, density=dens,
+                    stringsAsFactors=FALSE)
+  density_rows[[6L + j]] <- row
+  edge_lists[[6L + j]]   <- edges
+  append_csv_row(row, DENSITY_CSV)   # incremental write
   cat(sprintf("  top-k=%d   n_pairs=%d  n_genes=%d  density=%.5f\n",
               k, npairs, ngenes, dens))
   flush.console()
 }
 
 density_table <- rbindlist(density_rows)
-fwrite(density_table, DENSITY_CSV)
 cat("\nDensity table written to", DENSITY_CSV, "\n")
+
+# ── Phase-1-only stop gate ───────────────────────────────────────────────────
+# When STAGE3_PHASE1_ONLY=1, stop here (do not load cor matrices / run Phase 2).
+if (identical(Sys.getenv("STAGE3_PHASE1_ONLY"), "1")) {
+  cat("\nSTAGE3_PHASE1_ONLY=1 — stopping after Phase 1 density table.\n")
+  cat("PHASE 1 complete\n")
+  quit(save = "no", status = 0)
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-extract per-condition r for candidate pairs
@@ -177,12 +229,15 @@ cat("\n", strrep("-", 60), "\n", sep = "")
 stamp("Building candidate pair tables for per-condition extraction ...")
 
 # Global-r candidates: abs_r >= 0.27 (buffer 0.08 below minimum threshold 0.35)
-cand_global <- dt_pairs[abs_r >= 0.27, .(gene_id_A, gene_id_B, abs_r)]
+idx_g       <- which(mean_abs_r >= 0.27)
+cand_global <- data.table(gene_id_A = gA[idx_g], gene_id_B = gB[idx_g],
+                          abs_r = mean_abs_r[idx_g])
 stamp(paste("  Global-r candidates (abs_r>=0.27):", nrow(cand_global)))
 
 # Top-k candidates: top-200 per gene (covers top-100 with buffer for splits)
-cand_topk <- dt_pairs[rank_as_A <= 200L | rank_as_B <= 200L,
-                       .(gene_id_A, gene_id_B, abs_r)]
+idx_t     <- which(rank_as_A <= 200L | rank_as_B <= 200L)
+cand_topk <- data.table(gene_id_A = gA[idx_t], gene_id_B = gB[idx_t],
+                        abs_r = mean_abs_r[idx_t])
 stamp(paste("  Top-200 candidates per gene:", nrow(cand_topk)))
 
 # Union of both (removes duplicates)
@@ -192,10 +247,10 @@ cand_all <- unique(
 )
 stamp(paste("  Union candidates:", nrow(cand_all)))
 
-# Free large tables before loading cor matrices
-rm(dt_pairs, cand_global)
+# Free large base-R vectors before loading cor matrices
+rm(gA, gB, mean_abs_r, rank_as_A, rank_as_B, idx_g, idx_t, cand_global, cand_topk)
 gc(verbose = FALSE)
-stamp("Freed dt_pairs. Starting per-condition r extraction ...")
+stamp("Freed pair vectors. Starting per-condition r extraction ...")
 
 # Gene name → integer index (from first cor matrix; all share the same rownames)
 gene_names_universe <- NULL
@@ -219,19 +274,19 @@ for (cond_col in COR_COLS) {
   stamp(paste("  Done in", round(elapsed_secs(t_load),1), "s"))
 }
 
-# Derive top-200 subset from cand_all for Lever B split-half
-# (avoids loading cand_topk separately with per-cond r; re-rank within cand_all)
+# Derive top-200 subset from cand_all for Lever B split-half (base-R ranking).
 stamp("Building top-200-per-gene subset from cand_all for Lever B split-half ...")
-cand_all[, .rank_A := frank(-abs_r, ties.method = "first"), by = gene_id_A]
-cand_all[, .rank_B := frank(-abs_r, ties.method = "first"), by = gene_id_B]
-cand_topk_sh <- cand_all[.rank_A <= 200L | .rank_B <= 200L]
-cand_all[, c(".rank_A", ".rank_B") := NULL]
+.ra          <- .rank_within_gene(cand_all$abs_r, cand_all$gene_id_A)
+.rb          <- .rank_within_gene(cand_all$abs_r, cand_all$gene_id_B)
+keep_sh      <- which(.ra <= 200L | .rb <= 200L)
+cand_topk_sh <- cand_all[keep_sh]
+rm(.ra, .rb, keep_sh)
 stamp(paste("  Top-200 split-half candidates:", nrow(cand_topk_sh)))
 
 # Persist to disk (for debugging / resume)
 saveRDS(cand_all,      file.path(OUT_DIR, "cand_extended.rds"),    compress = FALSE)
 saveRDS(cand_topk_sh,  file.path(OUT_DIR, "cand_topk_sh.rds"),     compress = FALSE)
-rm(cand_topk); gc(verbose = FALSE)
+gc(verbose = FALSE)
 stamp("Pre-extraction complete.")
 
 cat("\nPHASE 1 complete\n\n")
@@ -580,12 +635,14 @@ fmt_dt <- function(dt) {
   paste(c(hdr, sep, rows), collapse = "\n")
 }
 
-pareto_tbl <- if (nrow(pareto_pts) > 0L)
+pareto_tbl <- if (nrow(pareto_pts) > 0L) {
   fmt_dt(pareto_pts[, .(lever, param, density=round(density,5),
                           splithalf=round(splithalf,4),
                           eff_rank=round(eff_rank,3),
                           heldout_r2=round(heldout_r2,4))])
-else "No non-dominated Pareto points (check for NA metrics)."
+} else {
+  "No non-dominated Pareto points (check for NA metrics)."
+}
 
 findings <- c(
   "# Stage 3: Edge-Threshold Selection Findings",
