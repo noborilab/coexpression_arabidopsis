@@ -624,6 +624,88 @@ cat("  recovery rate:",
 cat("(Post-hoc sanity — NOT used in threshold selection)\n")
 flush.console()
 
+# ── 3.4b kME post-hoc at recommended point ───────────────────────────────────
+
+cat("\n--- kME ANALYSIS (post-hoc; recommended point only; NOT selection) ---\n")
+# Initialize so FINDINGS.md can reference safely even if computation fails.
+kme_df        <- NULL
+b3_kme_row    <- NULL
+wrky_kme_df   <- NULL
+
+tryCatch({
+  edges_rec_r <- merge(
+    edges_rec[, .(gene_id_A, gene_id_B, abs_r)],
+    cand_all[, c("gene_id_A","gene_id_B", COR_COLS), with = FALSE],
+    by   = c("gene_id_A","gene_id_B"),
+    all.x = TRUE
+  )
+  fp      <- .stage3_fingerprint(edges_rec_r, cor_cols = COR_COLS)
+  mat_fp  <- fp$matrix   # genes × 4 conditions
+  gids    <- fp$gene_ids
+
+  if (length(gids) < 2L) stop("fewer than 2 genes in fingerprint")
+
+  # Louvain for full membership
+  g_rec  <- igraph::graph_from_data_frame(
+    edges_rec[, .(gene_id_A, gene_id_B, weight = abs_r)],
+    directed = FALSE
+  )
+  set.seed(98L)
+  cl_rec   <- igraph::cluster_louvain(g_rec, weights = igraph::E(g_rec)$weight)
+  memb_vec <- igraph::membership(cl_rec)
+
+  kme_df <- data.frame(
+    gene_id = gids,
+    module  = as.integer(memb_vec[gids]),
+    kme     = NA_real_,
+    stringsAsFactors = FALSE
+  )
+  gene_idx <- setNames(seq_len(nrow(kme_df)), kme_df$gene_id)
+
+  for (mod_id in sort(unique(kme_df$module))) {
+    gi <- kme_df$gene_id[kme_df$module == mod_id]
+    if (length(gi) < 2L) next          # singleton → kme stays NA (grey)
+    mod_mat  <- mat_fp[gi, , drop = FALSE]
+    mod_mean <- colMeans(mod_mat)
+    if (stats::sd(mod_mean) < 1e-10) next
+    for (g in gi) {
+      kme_df$kme[gene_idx[g]] <- stats::cor(mat_fp[g, ], mod_mean)
+    }
+  }
+
+  # BON3 kME
+  b3_kme_row <- kme_df[kme_df$gene_id == BON3_ID, ]
+  cat("BON3 (AT1G08860):\n")
+  if (nrow(b3_kme_row) == 1L && !is.na(b3_kme_row$kme)) {
+    cat(sprintf("  module = %d,  kME = %.4f\n", b3_kme_row$module, b3_kme_row$kme))
+  } else {
+    cat("  BON3 not in network or in singleton module (kME = NA)\n")
+  }
+
+  # WRKY kME
+  wrky_kme_df <- kme_df[kme_df$gene_id %in% wrky_ids, ]
+  n_w_net  <- nrow(wrky_kme_df)
+  n_w_asgn <- sum(!is.na(wrky_kme_df$kme))
+  cat(sprintf("WRKY: %d in network | %d non-singleton (kME assigned)\n",
+              n_w_net, n_w_asgn))
+  if (n_w_asgn > 0L) {
+    kvals <- sort(wrky_kme_df$kme[!is.na(wrky_kme_df$kme)], decreasing = TRUE)
+    cat(sprintf("  kME: min=%.3f Q1=%.3f median=%.3f Q3=%.3f max=%.3f\n",
+                min(kvals), stats::quantile(kvals, 0.25),
+                stats::median(kvals), stats::quantile(kvals, 0.75), max(kvals)))
+    top5 <- wrky_kme_df[order(-wrky_kme_df$kme), ][seq_len(min(5L, n_w_asgn)), ]
+    cat("  Top-5 WRKY by kME:\n")
+    for (i in seq_len(nrow(top5))) {
+      cat(sprintf("    %s  mod=%d  kME=%.4f\n",
+                  top5$gene_id[i], top5$module[i], top5$kme[i]))
+    }
+  }
+}, error = function(e) {
+  message("  [WARN] kME computation failed: ", conditionMessage(e))
+})
+cat("(kME reported as post-hoc sanity only — NOT a selection input)\n")
+flush.console()
+
 # ── 3.5 Write STAGE3_FINDINGS.md ─────────────────────────────────────────────
 
 fmt_dt <- function(dt) {
@@ -702,19 +784,37 @@ for (bi in seq_along(lever_compare)) {
   )
 }
 
+bon3_kme_str <- if (!is.null(b3_kme_row) && nrow(b3_kme_row) == 1L && !is.na(b3_kme_row$kme))
+  sprintf("module=%d  kME=%.4f", b3_kme_row$module, b3_kme_row$kme)
+else "kME=NA (not in network or singleton module)"
+
+wrky_kme_str <- if (!is.null(wrky_kme_df) && sum(!is.na(wrky_kme_df$kme)) > 0L) {
+  kvals_f <- sort(wrky_kme_df$kme[!is.na(wrky_kme_df$kme)], decreasing = TRUE)
+  top5_f  <- wrky_kme_df[order(-wrky_kme_df$kme), ][seq_len(min(5L, length(kvals_f))), ]
+  top5_str <- paste(
+    sprintf("%s(mod=%d,kME=%.3f)", top5_f$gene_id, top5_f$module, top5_f$kme),
+    collapse = "; "
+  )
+  sprintf("n_in_net=%d assigned=%d; kME median=%.3f range=[%.3f,%.3f]; top-5: %s",
+          nrow(wrky_kme_df), length(kvals_f),
+          stats::median(kvals_f), min(kvals_f), max(kvals_f), top5_str)
+} else "kME unavailable"
+
 findings <- c(findings,
   "## 6. Post-Hoc Sanity at Recommended Point",
   "",
   "*(NOT used for selection — reported after recommendation is fixed.)*",
   "",
   paste0("**BON3 (AT1G08860):** in network = ", BON3_ID %in% net_genes,
-         ";  n partners = ", length(bon3_partners)),
+         ";  n partners = ", length(bon3_partners),
+         ";  ", bon3_kme_str),
   "",
-  paste0("**WRKY family:** ", n_wrky_net, " / ", length(wrky_ids),
-         " WRKY genes in network (",
+  paste0("**WRKY family (n=", length(wrky_ids), "):** ",
          if (length(wrky_ids) > 0)
-           round(100 * n_wrky_net / length(wrky_ids), 1)
-         else "NA", "%)"),
+           paste0(n_wrky_net, " in network (",
+                  round(100 * n_wrky_net / length(wrky_ids), 1), "%)")
+         else "NA",
+         ";  ", wrky_kme_str),
   ""
 )
 
@@ -759,7 +859,9 @@ for (bi in seq_along(lever_compare)) {
 cat("\n5. BON3 + WRKY POST-HOC SANITY (NOT selection criteria)\n")
 cat("   BON3 in network:", BON3_ID %in% net_genes,
     "| n partners:", length(bon3_partners), "\n")
+cat("   BON3 kME:", bon3_kme_str, "\n")
 cat("   WRKY in network:", n_wrky_net, "/", length(wrky_ids), "\n")
+cat("   WRKY kME:", wrky_kme_str, "\n")
 
 cat("\n6. PHASE 4 (metacell sweep): Not attempted — deferred to preserve Phase 3 quality.\n")
 
