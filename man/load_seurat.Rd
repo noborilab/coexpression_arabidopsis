@@ -47,6 +47,9 @@ row names are assumed to be AT-IDs already.}
 }
 \value{
 An InputBundle (named list; see \code{docs/OUTPUT_SCHEMA.md}).
+Includes \code{$counts_raw} (raw integer counts, same dims as
+\code{$counts}) when the \code{"counts"} slot/layer is available in the
+Seurat object. \code{NULL} with a warning if extraction fails.
 }
 \description{
 Load and standardise a Seurat object into an InputBundle

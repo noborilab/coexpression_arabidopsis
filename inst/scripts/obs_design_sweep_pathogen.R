@@ -38,8 +38,11 @@ SEURAT_PATH    <- file.path(
 )
 SYMBOL_MAP_PATH <- "results/pathogen_multiome/symbol_map.csv"
 SUBCLUSTER_COL  <- "sub_clst_rna_20260610"
-STRATUM_VAR     <- "sample2"          # condition derived from this column
-STRATUM_LEVELS  <- c("Mock", "DC3000", "AvrRpt2", "AvrRpm1")
+# sample2 holds 13 time-point×condition values (e.g. "00_Mock", "DC3000_09h").
+# Pass NULL so load_seurat auto-detects all levels and keeps all 65k cells.
+# Condition context (4-level) is only needed for post-hoc reporting, not design eval.
+STRATUM_VAR     <- "sample2"
+STRATUM_LEVELS  <- NULL               # keep all 13 sample2 levels
 OUT_DIR         <- "results/pathogen_multiome/obs_design"
 
 # Normalization methods to test (Stage 1)
