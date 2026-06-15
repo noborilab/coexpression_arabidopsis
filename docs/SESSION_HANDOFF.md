@@ -228,3 +228,29 @@ candidates <- c(
   Rebuild after threshold selection.
 - pickSoftThreshold for WGCNA: deferred to after threshold confirmed.
 - GGM rerun (per-condition, full gene universe): still pending (RERUN_PLAN.md).
+
+### Stage 3 final decision (added post-sweep)
+Edge threshold confirmed: global |r| = tanh(z_bar) ≥ 0.42
+
+Prior-free justification (obs-point axis, 298 pseudobulk profiles):
+  splithalf_jaccard = 0.9509
+  eff_rank          = 116.87  (out of max 298)
+  heldout_r2        = 0.5500
+  null_gap          = 7.2M    (real_frac≈0.96, perm_frac≈0.00)
+  visible_genes     = 5,450
+
+Lever B (per-gene top-k) rejected: null_gap ≈ 1.19 across all k
+(only 19% above random; eff_rank advantage was an artifact of
+forced full-gene coverage, not network quality).
+
+Within Lever A, |r|≥0.42 selected over stricter thresholds:
+  - splithalf plateau above 0.42 (Δ=0.008 from 0.42→0.50)
+  - visible_genes drops sharply above 0.46 (−26% at 0.50)
+  - diminishing returns in stability, meaningful cost in coverage
+
+Next steps:
+  - Rebuild official modules at |r|≥0.42:
+      WGCNA with pickSoftThreshold (deferred from session)
+      Louvain (replace modules_absr042 with official run)
+  - metacell sweep (FLAG-14, still pending)
+  - GGM rerun per-condition full gene universe (RERUN_PLAN.md)
