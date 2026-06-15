@@ -384,15 +384,16 @@ for (pt in design_points) {
   # ── 2. Per-condition r for retained edges (for fingerprint metrics) ────────
   # Use match() on pre-built ca_key — avoids data.table merge() which can
   # segfault on aarch64-darwin. ca_key = paste0(ca_gA, "|||", ca_gB).
-  pt_key     <- paste0(pt$edges$gene_id_A, "|||", pt$edges$gene_id_B)
-  idx_match  <- match(pt_key, ca_key)   # base-R match; NA = not found
+  # Note: use .edge_key (not pt_key) to avoid overwriting the loop's pt_key variable.
+  .edge_key  <- paste0(pt$edges$gene_id_A, "|||", pt$edges$gene_id_B)
+  idx_match  <- match(.edge_key, ca_key)   # base-R match; NA = not found
   edges_with_r <- data.table(
     gene_id_A = pt$edges$gene_id_A,
     gene_id_B = pt$edges$gene_id_B,
     abs_r     = pt$edges$abs_r
   )
   for (.col in COR_COLS) edges_with_r[[.col]] <- ca_r[[.col]][idx_match]
-  rm(pt_key, idx_match)
+  rm(.edge_key, idx_match)
 
   n_missing <- sum(is.na(edges_with_r[[COR_COLS[1L]]]))
   if (n_missing > 0L) {
