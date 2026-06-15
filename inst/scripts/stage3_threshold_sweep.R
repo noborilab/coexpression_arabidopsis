@@ -638,9 +638,10 @@ edges_rec <- if (length(rec_idx)) design_points[[rec_idx[1]]]$edges else
 
 net_genes <- unique(c(edges_rec$gene_id_A, edges_rec$gene_id_B))
 
+# Use base-R $+which() — dt[i,j] on 2.95M rows segfaults on aarch64-darwin.
 bon3_partners <- unique(c(
-  edges_rec[gene_id_A == BON3_ID, gene_id_B],
-  edges_rec[gene_id_B == BON3_ID, gene_id_A]
+  edges_rec$gene_id_B[edges_rec$gene_id_A == BON3_ID],
+  edges_rec$gene_id_A[edges_rec$gene_id_B == BON3_ID]
 ))
 cat("BON3 (AT1G08860):\n")
 cat("  in network:", BON3_ID %in% net_genes, "\n")
@@ -699,7 +700,9 @@ tryCatch({
 
   # Louvain for full membership
   g_rec  <- igraph::graph_from_data_frame(
-    edges_rec[, .(gene_id_A, gene_id_B, weight = abs_r)],
+    data.frame(gene_id_A = edges_rec$gene_id_A,
+               gene_id_B = edges_rec$gene_id_B,
+               weight    = edges_rec$abs_r),
     directed = FALSE
   )
   set.seed(98L)
