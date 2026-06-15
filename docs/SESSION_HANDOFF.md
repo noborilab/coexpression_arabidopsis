@@ -345,3 +345,34 @@ t25 (0.878) is only 1.9% below subcluster (0.895). At n_pts ≈ 5000-10000, meta
 4. **Higher-res cluster sweep**: to reach n_pts ≈ 298, resolution ~10-50 would be needed.
 5. **GGM rerun** per-condition full gene universe: COMPLETE (output_per_condition/, FLAG-05/06 resolved).
 6. **Post-hoc BON3/WRKY sanity**: run on subcluster design (blocked by metacell sweep earlier).
+
+---
+
+### Pipeline audit findings (2026-06-15 session 3)
+
+Three BLOCKERs for new-dataset use (found by codebase audit):
+
+**BLOCKER-A: `annotate_context()` hardcodes "Mock" as reference condition**
+- File: `R/interpret.R` line ~349
+- Impact: silent wrong output on any dataset where the reference condition
+  is not named "Mock". Must be parameterized before dev atlas.
+- Fix: add a `ref_condition` parameter to `annotate_context()` and propagate
+  through the interpret pipeline.
+
+**BLOCKER-B: condition-pattern labels hardcode pathogen semantics**
+- File: `R/robustness.R` line ~350
+- Impact: "pan_pathogen"/"ETI_shared" labels only make sense for the
+  pathogen condition order. Dev atlas will get wrong labels silently.
+- Fix: make pattern labels a user-supplied lookup table, not hardcoded.
+
+**BLOCKER-C: `sub_clst_rna_20260610` hardcoded in 6 scripts**
+- Impact: any new dataset will fail or silently use wrong clusters.
+- Fix: parameterize `group_col` as a pipeline-level config variable.
+
+Other gaps (non-blocking for pathogen, blocking for new dataset):
+- No unit tests for `R/stage3_threshold_eval.R`
+- `stage3_metrics.csv` has 4 duplicate rows (Phase 2 artifact; de-duplicate before analysis)
+- Dev atlas readiness: 7 manual intervention steps total (see
+  `results/pathogen_multiome/report/PIPELINE_AUDIT.md` for full list)
+- `run_pipeline.R` covers core path but full sweep requires 6+ scripts
+  in sequence with human checkpoints — no single orchestrating entry point
