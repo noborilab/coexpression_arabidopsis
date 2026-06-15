@@ -109,11 +109,15 @@ NULL
 
 # Pearson correlation of the vectorized upper triangles of two square matrices.
 # Returns NA if either vector has zero variance.
+# NaN entries (from degenerate constant genes in split-half sub-bundles) are
+# excluded from the comparison before computing variance and correlation.
 .matrix_correlation <- function(m1, m2) {
   ut <- upper.tri(m1, diag = FALSE)
   v1 <- m1[ut]
   v2 <- m2[ut]
-  if (stats::var(v1) == 0 || stats::var(v2) == 0) return(NA_real_)
+  ok <- is.finite(v1) & is.finite(v2)
+  v1 <- v1[ok]; v2 <- v2[ok]
+  if (length(v1) < 2L || stats::var(v1) == 0 || stats::var(v2) == 0) return(NA_real_)
   stats::cor(v1, v2)
 }
 
