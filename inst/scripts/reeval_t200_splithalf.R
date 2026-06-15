@@ -16,7 +16,7 @@ SEURAT_PATH <- file.path(
   "combined_filtered.rds"
 )
 SYMBOL_MAP_PATH <- "results/pathogen_multiome/symbol_map.csv"
-SUBCLUSTER_COL  <- "sub_clst_rna_20260610"
+SUBCLUSTER_COL  <- "sub_clst_rna_20260610"  # dataset-specific: edit for new datasets
 CSV_PATH        <- "results/pathogen_multiome/obs_design/stage2_metacell_sweep.csv"
 
 set.seed(98L)

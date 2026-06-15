@@ -50,7 +50,7 @@ SEURAT_PATH <- paste0(
 )
 DATASET_ID     <- "pathogen_multiome"
 STRATUM_VAR    <- "sample2"
-SUBCLUSTER_COL <- "sub_clst_rna_20260610"
+SUBCLUSTER_COL <- "sub_clst_rna_20260610"   # dataset-specific: edit for new datasets
 SYMBOL_MAP_PATH <- "results/pathogen_multiome/symbol_map.csv"
 
 RESULTS_DIR  <- "results/pathogen_multiome/pseudobulk_zscore_spearman"
