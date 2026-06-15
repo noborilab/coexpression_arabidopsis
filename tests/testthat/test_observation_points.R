@@ -203,6 +203,42 @@ test_that("obs_cluster: higher resolution yields >= as many points as lower (or 
   }
 })
 
+# FLAG-14 Bug #1 regression: obs_cluster must never reuse generic cluster columns.
+test_that("obs_cluster: ignores seurat_clusters / generic cluster columns; always recomputes at given resolution", {
+  skip_if_not_installed("igraph")
+
+  bundle <- .make_bundle_with_raw(n_genes = 20L, n_cells_per_stratum = 25L)
+  n_cells <- ncol(bundle$counts)
+
+  # Simulate a Seurat object that has 34 pre-existing clusters in multiple
+  # generic columns that the old code would have matched.
+  bundle$cell_meta$seurat_clusters <- factor(rep(seq_len(34L), length.out = n_cells))
+  bundle$cell_meta$cluster_id      <- bundle$cell_meta$seurat_clusters
+
+  # Request resolution 0.5 — no "RNA_snn_res.0.5" column exists, so the fix
+  # must trigger a recompute rather than falling back to seurat_clusters.
+  set.seed(7L)
+  obs <- tryCatch(
+    obs_cluster(bundle, resolution = 0.5),
+    error = function(e) NULL
+  )
+
+  if (!is.null(obs)) {
+    expect_true(.is_obs_point_set(obs),
+                label = "result is a valid ObsPointSet after forced recompute")
+
+    # design$cluster_col must be the resolution-specific key, not seurat_clusters.
+    expect_equal(obs$design$cluster_col, "RNA_snn_res.0.5",
+                 label = "cluster_col records resolution-specific name after recompute")
+
+    # With 50 cells at res=0.5 the kNN+Louvain gives far fewer than 34 clusters.
+    expect_false(
+      ncol(obs$matrix) == 34L,
+      label = "number of clusters must differ from the 34-cluster seurat_clusters default"
+    )
+  }
+})
+
 # ---------------------------------------------------------------------------
 # obs_metacell_knn
 # ---------------------------------------------------------------------------

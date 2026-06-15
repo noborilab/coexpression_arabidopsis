@@ -175,14 +175,18 @@ suppressOutput <- function(expr) {
 #'
 #' @description
 #' Aggregates cells by graph-clustering labels at a given Louvain resolution.
-#' The function first looks for a pre-computed cluster column in
-#' \code{bundle$cell_meta}: it checks (in order) \code{"seurat_clusters"},
-#' \code{paste0("RNA_snn_res.", resolution)},
-#' \code{paste0("SCT_snn_res.", resolution)},
-#' \code{paste0("wsnn_res.", resolution)}, and any column whose name matches
-#' \code{^res\\.[0-9]} or contains \code{"cluster"}.  If no match is found the
-#' function builds a kNN graph (\code{k = 15}) from PCA coordinates and runs
-#' \code{igraph::cluster_louvain} at the requested resolution.
+#' The function checks \code{bundle$cell_meta} for an exact resolution-specific
+#' column: \code{paste0("RNA_snn_res.", resolution)},
+#' \code{paste0("SCT_snn_res.", resolution)}, or
+#' \code{paste0("wsnn_res.", resolution)}.  Generic columns such as
+#' \code{"seurat_clusters"} or any column whose name merely contains
+#' \code{"cluster"} are \strong{never} used as a fallback, as they may reflect
+#' a different resolution and make the sweep uninformative.
+#' If no resolution-specific column exists the function always recomputes:
+#' it builds a kNN graph (\code{k = 15}) from PCA coordinates and runs
+#' \code{igraph::cluster_louvain} at the requested resolution.  The resulting
+#' column is recorded as \code{RNA_snn_res.\{resolution\}} in
+#' \code{$design$cluster_col}.
 #'
 #' @param bundle      An \code{InputBundle} as returned by \code{load_seurat()}.
 #' @param resolution  Numeric; Louvain resolution controlling cluster granularity
@@ -220,25 +224,20 @@ obs_cluster <- function(bundle, resolution = 1.0, aggregation = "mean") {
     }
 
     # --- find or compute cluster labels ---
+    # Only resolution-specific columns are accepted as reuse candidates.
+    # Generic columns ("seurat_clusters", grep on "cluster") are intentionally
+    # excluded: they may reflect a different resolution and corrupt a granularity
+    # sweep (FLAG-14 Bug #1).
     cluster_col <- NULL
     candidates <- c(
       paste0("RNA_snn_res.", resolution),
       paste0("SCT_snn_res.", resolution),
-      paste0("wsnn_res.", resolution),
-      "seurat_clusters"
+      paste0("wsnn_res.", resolution)
     )
     for (cand in candidates) {
       if (cand %in% names(cell_meta)) {
         cluster_col <- cand
         break
-      }
-    }
-    if (is.null(cluster_col)) {
-      # fallback: any column matching ^res\.[0-9] or containing "cluster"
-      pattern_match <- grep("^res\\.[0-9]|cluster", names(cell_meta),
-                            value = TRUE, ignore.case = TRUE)
-      if (length(pattern_match) > 0L) {
-        cluster_col <- pattern_match[1L]
       }
     }
 
@@ -255,7 +254,8 @@ obs_cluster <- function(bundle, resolution = 1.0, aggregation = "mean") {
         igraph::cluster_louvain(g, resolution = resolution),
         error = function(e) igraph::cluster_louvain(g)
       )
-      labels <- as.character(igraph::membership(comm))
+      labels      <- as.character(igraph::membership(comm))
+      cluster_col <- paste0("RNA_snn_res.", resolution)
     }
 
     # --- aggregate ---
