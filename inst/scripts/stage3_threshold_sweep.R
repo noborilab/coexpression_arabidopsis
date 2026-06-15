@@ -227,32 +227,46 @@ if (identical(Sys.getenv("STAGE3_PHASE1_ONLY"), "1")) {
 
 cat("\n", strrep("-", 60), "\n", sep = "")
 stamp("Building candidate pair tables for per-condition extraction ...")
+# IMPORTANT: data.table [i] subsetting (dt[bool], dt[int], dt[expr], merge, unique(by=))
+# all segfault on this aarch64-darwin machine (data.table GForce / C-level crash).
+# RULE: use only base-R operations on large vectors; build data.tables from
+# constructors only (no [i] subsetting on any data.table with > 1M rows).
 
-# Global-r candidates: abs_r >= 0.27 (buffer 0.08 below minimum threshold 0.35)
-idx_g       <- which(mean_abs_r >= 0.27)
-cand_global <- data.table(gene_id_A = gA[idx_g], gene_id_B = gB[idx_g],
-                          abs_r = mean_abs_r[idx_g])
-stamp(paste("  Global-r candidates (abs_r>=0.27):", nrow(cand_global)))
+# Global-r buffer: all pairs with mean_abs_r >= 0.27
+idx_g <- which(mean_abs_r >= 0.27)
+stamp(paste("  Global-r candidates (abs_r>=0.27):", length(idx_g)))
 
-# Top-k candidates: top-200 per gene (covers top-100 with buffer for splits)
-idx_t     <- which(rank_as_A <= 200L | rank_as_B <= 200L)
-cand_topk <- data.table(gene_id_A = gA[idx_t], gene_id_B = gB[idx_t],
-                        abs_r = mean_abs_r[idx_t])
-stamp(paste("  Top-200 candidates per gene:", nrow(cand_topk)))
+# Top-200 per gene (needed for Lever B evaluation and split-half)
+idx_t <- which(rank_as_A <= 200L | rank_as_B <= 200L)
+stamp(paste("  Top-200 candidates per gene:", length(idx_t)))
 
-# Union: cand_global covers abs_r >= 0.27; only keep top-200 pairs below that threshold.
-# data.table::unique(by=) uses GForce and segfaults on aarch64-darwin; use filter+rbind.
-topk_extra <- cand_topk[abs_r < 0.27]   # simple column filter — no GForce path
-cand_all   <- rbind(cand_global, topk_extra)
-rm(topk_extra)
-stamp(paste("  Union candidates:", nrow(cand_all)))
+# Extra top-200 pairs NOT already covered by global-r buffer.
+# Use base-R indexing on raw vectors — no data.table [i].
+idx_t_extra <- idx_t[mean_abs_r[idx_t] < 0.27]
+stamp(paste("  Extra top-200 (abs_r<0.27, not in global-r):", length(idx_t_extra)))
+
+# Parallel base-R vectors for the union candidate set (cand_all equivalent).
+# These are NEVER stored as a data.table with [i]; instead Phase 2 / Phase 3
+# use match() lookups on ca_key for joining.
+ca_gA   <- c(gA[idx_g],         gA[idx_t_extra])
+ca_gB   <- c(gB[idx_g],         gB[idx_t_extra])
+ca_absr <- c(mean_abs_r[idx_g], mean_abs_r[idx_t_extra])
+stamp(paste("  Total union candidates:", length(ca_gA)))
+
+# Separate parallel vectors for the top-200 split-half set.
+sh_gA   <- gA[idx_t]
+sh_gB   <- gB[idx_t]
+sh_absr <- mean_abs_r[idx_t]
 
 # Free large base-R vectors before loading cor matrices
-rm(gA, gB, mean_abs_r, rank_as_A, rank_as_B, idx_g, idx_t, cand_global, cand_topk)
+rm(gA, gB, mean_abs_r, rank_as_A, rank_as_B, idx_g, idx_t, idx_t_extra)
 gc(verbose = FALSE)
 stamp("Freed pair vectors. Starting per-condition r extraction ...")
 
-# Gene name → integer index (from first cor matrix; all share the same rownames)
+# Per-condition r stored as named lists of plain R vectors (never in data.table [i]).
+ca_r <- vector("list", length(COR_COLS)); names(ca_r) <- COR_COLS
+sh_r <- vector("list", length(COR_COLS)); names(sh_r) <- COR_COLS
+
 gene_names_universe <- NULL
 
 for (cond_col in COR_COLS) {
@@ -265,23 +279,43 @@ for (cond_col in COR_COLS) {
     gene_names_universe <- rownames(cor_mat)
 
   gidx <- setNames(seq_along(gene_names_universe), gene_names_universe)
-  i_A  <- gidx[cand_all$gene_id_A]
-  i_B  <- gidx[cand_all$gene_id_B]
 
-  cand_all[[cond_col]] <- cor_mat[cbind(i_A, i_B)]
+  # Look up r for union candidates (base-R indexing into cor matrix)
+  ca_r[[cond_col]] <- cor_mat[cbind(gidx[ca_gA], gidx[ca_gB])]
+
+  # Look up r for top-200 split-half candidates
+  sh_r[[cond_col]] <- cor_mat[cbind(gidx[sh_gA], gidx[sh_gB])]
 
   rm(cor_mat); gc(verbose = FALSE)
   stamp(paste("  Done in", round(elapsed_secs(t_load),1), "s"))
 }
 
-# Derive top-200 subset from cand_all for Lever B split-half (base-R ranking).
-stamp("Building top-200-per-gene subset from cand_all for Lever B split-half ...")
-.ra          <- .rank_within_gene(cand_all$abs_r, cand_all$gene_id_A)
-.rb          <- .rank_within_gene(cand_all$abs_r, cand_all$gene_id_B)
-keep_sh      <- which(.ra <= 200L | .rb <= 200L)
-cand_topk_sh <- cand_all[keep_sh]
-rm(.ra, .rb, keep_sh)
+# Build cand_topk_sh for Lever B split-half via base-R ranking + constructor.
+# The top-200 re-rank on sh_* ensures the same top-200-per-gene selection.
+stamp("Building top-200-per-gene split-half candidates ...")
+.ra_sh  <- .rank_within_gene(sh_absr, sh_gA)
+.rb_sh  <- .rank_within_gene(sh_absr, sh_gB)
+keep_sh <- which(.ra_sh <= 200L | .rb_sh <= 200L)
+rm(.ra_sh, .rb_sh)
+
+# Build via constructor only (no [i] subsetting on any data.table)
+cand_topk_sh <- data.table(
+  gene_id_A = sh_gA[keep_sh],
+  gene_id_B = sh_gB[keep_sh],
+  abs_r     = sh_absr[keep_sh]
+)
+for (.col in COR_COLS) cand_topk_sh[[.col]] <- sh_r[[.col]][keep_sh]
+rm(sh_gA, sh_gB, sh_absr, sh_r, keep_sh)
 stamp(paste("  Top-200 split-half candidates:", nrow(cand_topk_sh)))
+
+# Build pair-key vector for match()-based join in Phase 2 / Phase 3.
+# Separator \x00 cannot appear in AT-IDs so keys are unambiguous.
+ca_key <- paste0(ca_gA, "\x00", ca_gB)
+
+# Build cand_all as data.table from constructor (for saveRDS / kME merge only).
+# Phase 2 uses ca_* vectors + ca_key for all row-level access.
+cand_all <- data.table(gene_id_A = ca_gA, gene_id_B = ca_gB, abs_r = ca_absr)
+for (.col in COR_COLS) cand_all[[.col]] <- ca_r[[.col]]
 
 # Persist to disk (for debugging / resume)
 saveRDS(cand_all,      file.path(OUT_DIR, "cand_extended.rds"),    compress = FALSE)
@@ -348,13 +382,18 @@ for (pt in design_points) {
   cat("    n_visible =", vis_res$n_visible, "\n"); flush.console()
 
   # ── 2. Per-condition r for retained edges (for fingerprint metrics) ────────
-  # Merge from cand_all (all retained edges should be in cand_all)
-  edges_with_r <- merge(
-    pt$edges[, .(gene_id_A, gene_id_B, abs_r)],
-    cand_all[, c("gene_id_A","gene_id_B", COR_COLS), with = FALSE],
-    by  = c("gene_id_A","gene_id_B"),
-    all.x = TRUE
+  # Use match() on pre-built ca_key — avoids data.table merge() which can
+  # segfault on aarch64-darwin. ca_key = paste0(ca_gA, "\x00", ca_gB).
+  pt_key     <- paste0(pt$edges$gene_id_A, "\x00", pt$edges$gene_id_B)
+  idx_match  <- match(pt_key, ca_key)   # base-R match; NA = not found
+  edges_with_r <- data.table(
+    gene_id_A = pt$edges$gene_id_A,
+    gene_id_B = pt$edges$gene_id_B,
+    abs_r     = pt$edges$abs_r
   )
+  for (.col in COR_COLS) edges_with_r[[.col]] <- ca_r[[.col]][idx_match]
+  rm(pt_key, idx_match)
+
   n_missing <- sum(is.na(edges_with_r[[COR_COLS[1L]]]))
   if (n_missing > 0L) {
     notes <- c(notes, sprintf("%d edges missing per-cond r", n_missing))
@@ -410,9 +449,17 @@ for (pt in design_points) {
     sh_res <- data.frame(splithalf_jaccard=NA_real_, splithalf_jaccard_sd=NA_real_, n_splits=0L)
   } else {
     stamp("  computing split-half (3 condition splits) ...")
-    # Choose candidate table: Lever A uses abs_r buffer, Lever B uses top-200 subset
+    # Choose candidate table: Lever A uses abs_r buffer, Lever B uses top-200 subset.
+    # Lever A: build from ca_* vectors using which() — no data.table [i] subsetting.
     if (!is.null(pt$threshold_r)) {
-      cand_sh <- cand_all[abs_r >= (pt$threshold_r - 0.08)]
+      keep_a  <- which(ca_absr >= (pt$threshold_r - 0.08))
+      cand_sh <- data.table(
+        gene_id_A = ca_gA[keep_a],
+        gene_id_B = ca_gB[keep_a],
+        abs_r     = ca_absr[keep_a]
+      )
+      for (.col in COR_COLS) cand_sh[[.col]] <- ca_r[[.col]][keep_a]
+      rm(keep_a)
     } else {
       cand_sh <- cand_topk_sh
     }
@@ -633,12 +680,16 @@ b3_kme_row    <- NULL
 wrky_kme_df   <- NULL
 
 tryCatch({
-  edges_rec_r <- merge(
-    edges_rec[, .(gene_id_A, gene_id_B, abs_r)],
-    cand_all[, c("gene_id_A","gene_id_B", COR_COLS), with = FALSE],
-    by   = c("gene_id_A","gene_id_B"),
-    all.x = TRUE
+  # Use match() on ca_key — avoids data.table merge() segfault on aarch64-darwin.
+  rec_key     <- paste0(edges_rec$gene_id_A, "\x00", edges_rec$gene_id_B)
+  idx_rec     <- match(rec_key, ca_key)
+  edges_rec_r <- data.table(
+    gene_id_A = edges_rec$gene_id_A,
+    gene_id_B = edges_rec$gene_id_B,
+    abs_r     = edges_rec$abs_r
   )
+  for (.col in COR_COLS) edges_rec_r[[.col]] <- ca_r[[.col]][idx_rec]
+  rm(rec_key, idx_rec)
   fp      <- .stage3_fingerprint(edges_rec_r, cor_cols = COR_COLS)
   mat_fp  <- fp$matrix   # genes × 4 conditions
   gids    <- fp$gene_ids
