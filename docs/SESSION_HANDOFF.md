@@ -433,6 +433,39 @@ Dev-atlas manual intervention steps: **7 → 5** (A and B now parameterized at c
 8. **v1 report gap corrected**: v2 report (`results/pathogen_multiome/report/v2/EXECUTIVE_SUMMARY_v2.html`) covers both modes.
 9. ~~**BLOCKER-A/B/C**~~: All FIXED (commits e560f21, 4e787d9, b4d2b0e).
 
+### Interpretation caveat: GGM vs pseudobulk condition-pattern distributions (2026-06-16)
+
+**DO NOT present the GGM/pseudobulk condition-pattern contrast as a clean biological finding.**
+
+The v2 report originally stated "GGM ~96% single-condition vs pseudobulk constitutive-dominant" as
+if this were a head-to-head biological comparison. It is not. This has been corrected in
+EXECUTIVE_SUMMARY_v2.html (2026-06-16).
+
+**Why it is not comparable** — three compounding factors:
+
+1. **Edge type**: GGM uses partial correlation (pcor ≥ 0.02, conditioning on all other genes, ~16k cells
+   per condition). Pseudobulk uses marginal Spearman (|rho| ≥ 0.10, no conditioning, ~280 subclusters
+   per condition). "Edge present in condition c" means different things.
+
+2. **Obs-point unit**: GGM operates on individual cells; pseudobulk on subclusters. Subclusters capture
+   cell-type variation that is structurally stable across conditions → most subcluster-level correlations
+   are present in all 4 conditions → constitutive pattern dominates. GGM pcor shifts when regulatory
+   context changes → single-condition patterns dominate.
+
+3. **I_s threshold vs storage floor**: In both modes, the I_s = 1 threshold is at or below the storage
+   floor (GGM: threshold ~0.013 < floor 0.02; pseudobulk: threshold ~0.097 ≈ floor 0.10). So I_s is
+   essentially binary edge presence in both cases, but "edge present" is defined differently.
+
+**What DOES support FLAG-13 (complementarity)**:
+The WRKY TF family recovery — 61/70 WRKYs at high kME in pseudobulk vs ~14/70 in GGM confident modules.
+This is a matched comparison on the same gene set and is the correct evidence for FLAG-13.
+
+**Rule going forward**: pattern-distribution figures (robustness/pattern_counts.csv for GGM;
+modules_official/*/module_condition_patterns.csv for pseudobulk) should always be framed as
+per-mode network properties, not cross-mode biological comparisons.
+
+---
+
 ### Future task: pipeline-wide gene-symbol display helper
 
 The report (v2) now shows "symbol (AT-ID)" for readability, but this is a
