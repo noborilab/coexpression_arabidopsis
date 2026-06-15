@@ -310,7 +310,7 @@ stamp(paste("  Top-200 split-half candidates:", nrow(cand_topk_sh)))
 
 # Build pair-key vector for match()-based join in Phase 2 / Phase 3.
 # Separator \x00 cannot appear in AT-IDs so keys are unambiguous.
-ca_key <- paste0(ca_gA, "\x00", ca_gB)
+ca_key <- paste0(ca_gA, "|||", ca_gB)
 
 # Build cand_all as data.table from constructor (for saveRDS / kME merge only).
 # Phase 2 uses ca_* vectors + ca_key for all row-level access.
@@ -383,8 +383,8 @@ for (pt in design_points) {
 
   # ── 2. Per-condition r for retained edges (for fingerprint metrics) ────────
   # Use match() on pre-built ca_key — avoids data.table merge() which can
-  # segfault on aarch64-darwin. ca_key = paste0(ca_gA, "\x00", ca_gB).
-  pt_key     <- paste0(pt$edges$gene_id_A, "\x00", pt$edges$gene_id_B)
+  # segfault on aarch64-darwin. ca_key = paste0(ca_gA, "|||", ca_gB).
+  pt_key     <- paste0(pt$edges$gene_id_A, "|||", pt$edges$gene_id_B)
   idx_match  <- match(pt_key, ca_key)   # base-R match; NA = not found
   edges_with_r <- data.table(
     gene_id_A = pt$edges$gene_id_A,
@@ -681,7 +681,7 @@ wrky_kme_df   <- NULL
 
 tryCatch({
   # Use match() on ca_key — avoids data.table merge() segfault on aarch64-darwin.
-  rec_key     <- paste0(edges_rec$gene_id_A, "\x00", edges_rec$gene_id_B)
+  rec_key     <- paste0(edges_rec$gene_id_A, "|||", edges_rec$gene_id_B)
   idx_rec     <- match(rec_key, ca_key)
   edges_rec_r <- data.table(
     gene_id_A = edges_rec$gene_id_A,
