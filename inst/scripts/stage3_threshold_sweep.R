@@ -25,9 +25,11 @@ suppressPackageStartupMessages({
 # Parse --phase flag
 .args     <- commandArgs(trailingOnly = TRUE)
 .phase_idx <- which(.args == "--phase")
-PHASE <- if (length(.phase_idx) && length(.args) > .phase_idx)
-           .args[.phase_idx + 1L]
-         else "all"
+PHASE <- if (length(.phase_idx) && length(.args) > .phase_idx) {
+  .args[.phase_idx + 1L]
+} else {
+  "all"
+}
 
 cat(sprintf("Stage 3 threshold sweep  |  phase = %s\n", PHASE))
 
@@ -594,12 +596,11 @@ cat("\n--- POST-HOC SANITY (recommended point; NOT a selection input) ---\n")
 rec_idx   <- which(sapply(design_points,
                            function(p) paste0(p$lever,"_",p$param)) ==
                      paste0(rec$lever,"_",rec$param))
-edges_rec <- if (length(rec_idx))
-               design_points[[rec_idx[1L]]]$edges
-             else
-               data.table(gene_id_A=character(),
-                          gene_id_B=character(),
-                          mean_abs_r=numeric())
+edges_rec <- if (length(rec_idx)) {
+  design_points[[rec_idx[1L]]]$edges
+} else {
+  data.table(gene_id_A=character(), gene_id_B=character(), mean_abs_r=numeric())
+}
 
 net_genes <- unique(c(edges_rec$gene_id_A, edges_rec$gene_id_B))
 
@@ -707,9 +708,11 @@ flush.console()
 # PHASE 3c: Write STAGE3_FINDINGS.md
 # ─────────────────────────────────────────────────────────────────────────────
 
-bon3_kme_str <- if (!is.null(b3_kme_row) && nrow(b3_kme_row)==1 && !is.na(b3_kme_row$kme))
+bon3_kme_str <- if (!is.null(b3_kme_row) && nrow(b3_kme_row)==1 && !is.na(b3_kme_row$kme)) {
   sprintf("module=%d  kME=%.4f", b3_kme_row$module, b3_kme_row$kme)
-else "kME=NA (not in network or singleton module)"
+} else {
+  "kME=NA (not in network or singleton module)"
+}
 
 wrky_kme_str <- if (!is.null(wrky_kme_df) && sum(!is.na(wrky_kme_df$kme)) > 0L) {
   kv   <- sort(wrky_kme_df$kme[!is.na(wrky_kme_df$kme)], decreasing=TRUE)
@@ -821,10 +824,11 @@ print(metrics[, .(lever, param, density, splithalf_jaccard, eff_rank,
                    heldout_r2, null_gap, visible_genes, eval_seconds)])
 
 cat("\n3. PARETO FRONT + RECOMMENDATION\n")
-if (nrow(pareto_pts) > 0L)
+if (nrow(pareto_pts) > 0L) {
   print(pareto_pts[, .(lever, param, density, splithalf_jaccard, eff_rank, heldout_r2)])
-else
+} else {
   cat("  (no non-dominated points — check for NA metrics)\n")
+}
 cat("Recommended:", rec$lever, " param =", rec$param, "\n")
 cat("  stability (splithalf_jaccard):", round(rec$splithalf_jaccard, 4), "\n")
 cat("  richness  (eff_rank):",          round(rec$eff_rank, 3), "\n")
