@@ -275,12 +275,12 @@ Next steps:
 
 | design | n_pts | eff_rank | splithalf | eval_min |
 |---|---|---|---|---|
-| metacell_t200 | 325 | 110.5 | NA (pre-fix) | 9.4 |
+| metacell_t200 | 325 | 110.5 | **0.744** (re-eval post-irlba+NaN-fix; prev NA) | 9.6 |
 | metacell_t100 | 651 | 241.7 | 0.781 | 16.6 |
 | metacell_t50 | 1301 | 535.8 | 0.831 | 31.2 |
 | metacell_t25 | 2602 | 1157.3 | 0.878 | 53.2 (2/3 reps) |
 
-t200 splithalf=NA: harness bug (NaN propagation) before fix at commit 5dcf50b; not re-evaluated.
+t200 splithalf re-evaluated post-irlba+NaN-fix: splithalf=0.744 (prev NA). See inst/scripts/reeval_t200_splithalf.R.
 t25 eval_min=53.2: the 45-min setTimeLimit fired during Rep 2's obs2 build (inner eval_splithalf
 tryCatch caught it, skipped Rep 2, Rep 3 ran normally). Valid metrics from 2/3 reps.
 
@@ -328,7 +328,7 @@ t25 (0.878) is only 1.9% below subcluster (0.895). At n_pts ≈ 5000-10000, meta
 
 #### FLAG-14 final status: PARTIALLY OPEN
 
-- t200 splithalf not re-evaluated (pre-harness-fix, NaN); eff_rank valid.
+- t200 splithalf re-evaluated: 0.744 (was NA; NaN fix applied). All 4 designs now have valid splithalf.
 - t25 used 2/3 split-half reps (transient timeout caught by inner tryCatch).
 - Both arms completed with meaningful results.
 
@@ -341,7 +341,7 @@ t25 (0.878) is only 1.9% below subcluster (0.895). At n_pts ≈ 5000-10000, meta
 
 1. **Comparison methods**: hdWGCNA / CS-CORE / SuperCell / SEACells — interface ready, not run.
 2. **Dev atlas obs-design sweep**: needs per-dataset sweep (FLAG-08 prerequisite).
-3. **t200 splithalf re-evaluation**: apply harness fix and re-run if stability for this design matters.
+3. ~~**t200 splithalf re-evaluation**~~: DONE — splithalf=0.744.
 4. **Higher-res cluster sweep**: to reach n_pts ≈ 298, resolution ~10-50 would be needed.
 5. **GGM rerun** per-condition full gene universe: COMPLETE (output_per_condition/, FLAG-05/06 resolved).
 6. **Post-hoc BON3/WRKY sanity**: run on subcluster design (blocked by metacell sweep earlier).
