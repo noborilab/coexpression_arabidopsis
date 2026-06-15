@@ -254,3 +254,94 @@ Next steps:
       Louvain (replace modules_absr042 with official run)
   - metacell sweep (FLAG-14, still pending)
   - GGM rerun per-condition full gene universe (RERUN_PLAN.md)
+
+---
+
+## Session 2026-06-15/16 (FLAG-14 completion)
+
+### Metacell + cluster sweep completion (FLAG-14)
+
+**Code commits this session:**
+- `feat: irlba PCA speedup for obs_metacell_knn (FLAG-14 metacell sweep)` (47e7a30)
+- `fix: filter NaN from matrix_correlation for split-half sub-bundles` (5dcf50b)
+
+**Bug fixes applied:**
+- `.pca_coords()` patched to use `irlba::prcomp_irlba()` (eliminates ~2-3 min PCA bottleneck per design)
+- `.matrix_correlation()` patched to filter NaN pairs from degenerate zero-variance genes in split-half sub-bundles (commit 5dcf50b)
+
+---
+
+#### Metacell arm results (n_reps=3, seed=98, zscore_gene+Spearman)
+
+| design | n_pts | eff_rank | splithalf | eval_min |
+|---|---|---|---|---|
+| metacell_t200 | 325 | 110.5 | NA (pre-fix) | 9.4 |
+| metacell_t100 | 651 | 241.7 | 0.781 | 16.6 |
+| metacell_t50 | 1301 | 535.8 | 0.831 | 31.2 |
+| metacell_t25 | 2602 | 1157.3 | 0.878 | 53.2 (2/3 reps) |
+
+t200 splithalf=NA: harness bug (NaN propagation) before fix at commit 5dcf50b; not re-evaluated.
+t25 eval_min=53.2: the 45-min setTimeLimit fired during Rep 2's obs2 build (inner eval_splithalf
+tryCatch caught it, skipped Rep 2, Rep 3 ran normally). Valid metrics from 2/3 reps.
+
+---
+
+#### Cluster re-sweep results (Bug #1 fixed, n_reps=3, seed=98)
+
+Pre-computation: irlba PCA (29 sec) + kNN graph (k=15, 65k cells) + 6 Louvain runs.
+Labels cached in bundle$cell_meta as RNA_snn_res.{R} → split-half reps skip PCA.
+
+| resolution | n_pts | eff_rank | splithalf | eval_sec |
+|---|---|---|---|---|
+| 0.10 | 4 | 2.87 | 0.615 | 72 |
+| 0.25 | 7 | 4.33 | 0.689 | 71 |
+| 0.50 | 12 | 6.43 | 0.707 | 72 |
+| 1.00 | 18 | 8.13 | 0.763 | 74 |
+| 2.00 | 30 | 11.66 | 0.838 | 82 |
+| 4.00 | 51 | 17.29 | 0.887 | 98 |
+
+Bug #1 confirmed fixed: n_pts varies 4-51 (vs all-34 before fix). kNN+Louvain with k=15 gives
+fewer clusters than Seurat's SNN (k=20) at same resolution — hence max 51 at res=4.0 vs
+subcluster's 298. All cluster designs dominated by subcluster on BOTH axes.
+
+---
+
+#### Pareto front conclusion
+
+Pareto front (stability = splithalf_mat_cor, richness = eff_rank):
+
+| design | splithalf | eff_rank | role |
+|---|---|---|---|
+| **subcluster(298)** | **0.895** | **159.9** | stability champion |
+| **metacell_t25(2602)** | **0.878** | **1157.3** | richness champion |
+
+- t25 dominates t50 and t100 on BOTH axes (t50: 0.831, 535.8; t100: 0.781, 241.7).
+- All cluster designs dominated by subcluster on BOTH axes.
+- **No design Pareto-dominates subcluster(298) on both axes simultaneously.**
+- Stage 3 threshold |r|≥0.42 and modules_official/ remain valid.
+
+Key finding: metacell designs show a non-monotone stability curve:
+t100 (0.781) < t50 (0.831) < t25 (0.878) — stability IMPROVES with more obs points beyond ~1300.
+t25 (0.878) is only 1.9% below subcluster (0.895). At n_pts ≈ 5000-10000, metacell may exceed subcluster.
+
+---
+
+#### FLAG-14 final status: PARTIALLY OPEN
+
+- t200 splithalf not re-evaluated (pre-harness-fix, NaN); eff_rank valid.
+- t25 used 2/3 split-half reps (transient timeout caught by inner tryCatch).
+- Both arms completed with meaningful results.
+
+**Recommendation: subcluster(298) confirmed** for production use.
+**Alternative: metacell_t25(2602)** for richness-first analyses.
+
+---
+
+#### Open items remaining
+
+1. **Comparison methods**: hdWGCNA / CS-CORE / SuperCell / SEACells — interface ready, not run.
+2. **Dev atlas obs-design sweep**: needs per-dataset sweep (FLAG-08 prerequisite).
+3. **t200 splithalf re-evaluation**: apply harness fix and re-run if stability for this design matters.
+4. **Higher-res cluster sweep**: to reach n_pts ≈ 298, resolution ~10-50 would be needed.
+5. **GGM rerun** per-condition full gene universe (FLAG-05/06, RERUN_PLAN.md).
+6. **Post-hoc BON3/WRKY sanity**: run on subcluster design (blocked by metacell sweep earlier).
