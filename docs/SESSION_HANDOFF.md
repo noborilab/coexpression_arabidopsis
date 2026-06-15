@@ -157,3 +157,74 @@ candidates <- c(
 - **Metacell sweep**: 4 designs (t200/t100/t50/t25) not completed due to runtime. Needs PCA speedup (irlba) or reduced split-half reps.
 - **Post-hoc BON3/WRKY sanity**: not run (sweep terminated before reaching post-hoc section). Run manually on the subcluster design.
 - **Comparison methods**: hdWGCNA / CS-CORE / SuperCell / SEACells interface ready but not implemented.
+
+---
+
+## Session 2026-06-15
+
+### Completed this session
+- Bug #1 fixed: obs_cluster resolution fallback — removed seurat_clusters and
+  grep("cluster") from candidate list; recompute is now default when no
+  resolution-specific column exists; cluster_col populated correctly.
+  Also fixed: cluster_col was NULL after recompute (shadowed loop variable).
+  Regression test added. Committed and pushed.
+
+- Phase 0 GGM review checklist completed (Axis 1–4, verdict: rerun required).
+  Key blockers: 1.16 (pooled conditions), 1.9 (HVG-only), 2.8 (mixed gene IDs).
+  Committed and pushed.
+
+- Pseudobulk pipeline run (Steps 1–3 complete):
+  zscore_gene + Spearman + obs_subcluster(298 pts)
+  → pair_scores_full.csv (54M pairs), robustness_result.rds,
+    pair_condition_patterns.csv
+  All saved under results/pathogen_multiome/pseudobulk_zscore_spearman/
+
+- Stage 3 (edge-threshold selection) established as new pipeline step,
+  co-equal with Stage 1 (normalization) and Stage 2 (obs-point design).
+  Same prior-free principle: stability-richness Pareto front.
+
+- Stage 3 Phase 1 complete: 9 networks built and characterised.
+  density_table.csv written. All 9 points valid.
+
+### Key findings and decisions
+- R_score cannot serve as an edge-density lever for pseudobulk Spearman
+  networks. It is a discrete 4-value count of conditions (0.25/0.50/0.75/1.00),
+  not a correlation-strength filter. Even R_score=1.00 leaves 42.5% density.
+  In GGM networks it worked incidentally because pcor cutoff pre-sparsified the
+  network; Spearman pseudobulk has no such pre-sparsification.
+  → Correct lever: mean|r| = tanh(z_bar) (global threshold) OR per-gene top-k.
+
+- Stage 3 Phase 2 (evaluation) ran but is INVALID. The stage3_eval_* adapters
+  used 4 per-condition cor matrices as the observation axis:
+    eff_rank saturated at ~2.8 (ceiling = 4 conditions)
+    heldout_r2 degenerated (2-fold LOO)
+    splithalf measured condition-structure divergence, not network stability
+  → Must rewrite all adapters to use cell→298-obs-point axis (same as Stage 1/2).
+
+- Evaluation adapter design decisions (confirmed):
+    splithalf: cell 2-split → obs-point rebuild → threshold → Jaccard (primary)
+               + Pearson of full upper triangle (secondary). 5 reps → 3 if >25min.
+    eff_rank:  SVD of genes×298 obs-point matrix after threshold masking.
+               (Was genes×4 fingerprint — wrong. Must be genes×298.)
+    heldout:   obs-point 5-fold CV guilt-by-association R².
+               (Was gene-hold-out LOO on 4 conditions — wrong.)
+    null_gap:  real vs permuted edges above threshold. n_perm=10. Keep as-is.
+    visible:   genes with ≥1 retained edge. Keep as-is.
+
+- WGCNA is viable at appropriate density: power=1 gave 22 modules (grey 7.5%)
+  at |r|≥0.42 in 3.6 min. Not viable at full density (74%: collapses to 1
+  module). pickSoftThreshold deferred to after threshold selection.
+
+- Environment trap (aarch64-darwin): data.table GForce segfaults.
+  Fix: base-R + fread(nThread=1L). Multiple commits already in main.
+
+### Open items (updated)
+- FLAG-14 partially open:
+    Stage 3 Phase 2: adapter rewrite + rerun NEXT (this handoff)
+    metacell sweep: still pending (never reached in this session)
+- Threshold confirmed as NOT determined yet (Phase 2 invalid)
+-暫定モジュール results/pathogen_multiome/modules_absr042/ at |r|≥0.42:
+  Louvain 6 modules, WGCNA-test 22 modules. Treat as preliminary only.
+  Rebuild after threshold selection.
+- pickSoftThreshold for WGCNA: deferred to after threshold confirmed.
+- GGM rerun (per-condition, full gene universe): still pending (RERUN_PLAN.md).
