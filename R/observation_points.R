@@ -80,20 +80,13 @@ NULL
 
 # ---- .pca_coords ----
 # Compute PCA on transposed log-norm matrix; returns cells×n_pcs score matrix.
+# Uses irlba::prcomp_irlba for speed on large matrices (FLAG-14 metacell sweep).
 .pca_coords <- function(mat) {
   n_pcs <- min(30L, nrow(mat) - 1L, ncol(mat) - 1L)
   if (n_pcs < 1L) stop("Matrix too small for PCA (need > 1 gene and > 1 cell).")
   mat_dense <- as.matrix(mat)
-  pca <- suppressOutput(
-    prcomp(t(mat_dense), center = TRUE, scale. = FALSE, rank. = n_pcs)
-  )
+  pca <- irlba::prcomp_irlba(t(mat_dense), n = n_pcs, center = TRUE, scale. = FALSE)
   pca$x  # cells × n_pcs
-}
-
-# Helper to suppress cat/print output from prcomp (not normally needed but safe).
-suppressOutput <- function(expr) {
-  capture.output(res <- expr)
-  res
 }
 
 
