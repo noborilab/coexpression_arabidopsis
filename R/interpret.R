@@ -31,8 +31,12 @@ NULL
 #' @param network_list Named list of NetworkResult (same strata as `rob`).
 #'   Used by downstream annotation functions (context, preservation).
 #' @param r_score_min Minimum R_score to include an edge. Default `0` (all
-#'   edges). Caller decides the threshold; this function does not filter
-#'   further.
+#'   edges). Ignored when `min_abs_r` is supplied.
+#' @param min_abs_r When non-`NULL`, filter edges by mean |Spearman r| =
+#'   `abs(tanh(z_bar)) >= min_abs_r` instead of R_score. This is the
+#'   preferred sparsification lever for pseudobulk networks because R_score
+#'   is a discrete condition-count (1–4) that leaves the network very dense
+#'   even at R_score = 1.0. Default `NULL` (use `r_score_min`).
 #' @param soft_power WGCNA soft-thresholding power. `NULL` (default) =
 #'   auto-pick by scale-free fit with `pickSoftThreshold.fromSimilarity`.
 #' @param merge_cut Module merge threshold (height). Default `0.25`. Lower
@@ -45,6 +49,7 @@ NULL
 build_wgcna_modules <- function(rob,
                                 network_list,
                                 r_score_min     = 0,
+                                min_abs_r       = NULL,
                                 soft_power      = NULL,
                                 merge_cut       = 0.25,
                                 min_module_size = 30,
@@ -54,11 +59,17 @@ build_wgcna_modules <- function(rob,
     stop("WGCNA must be installed. Run: install.packages('WGCNA') or ",
          "BiocManager::install('WGCNA')")
 
-  # 1. Filter pairs by R_score --------------------------------------------------
+  # 1. Filter pairs -------------------------------------------------------------
   ps <- rob$pair_scores
-  ps <- ps[!is.na(ps$R_score) & ps$R_score >= r_score_min, , drop = FALSE]
-  if (nrow(ps) == 0L)
-    stop("No pairs remain after r_score_min filter (r_score_min = ", r_score_min, ").")
+  if (!is.null(min_abs_r)) {
+    ps <- ps[!is.na(ps$z_bar) & abs(tanh(ps$z_bar)) >= min_abs_r, , drop = FALSE]
+    if (nrow(ps) == 0L)
+      stop("No pairs remain after min_abs_r filter (min_abs_r = ", min_abs_r, ").")
+  } else {
+    ps <- ps[!is.na(ps$R_score) & ps$R_score >= r_score_min, , drop = FALSE]
+    if (nrow(ps) == 0L)
+      stop("No pairs remain after r_score_min filter (r_score_min = ", r_score_min, ").")
+  }
 
   # 2. Gene universe ------------------------------------------------------------
   gene_ids <- sort(union(ps$gene_id_A, ps$gene_id_B))
