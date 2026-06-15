@@ -240,11 +240,11 @@ cand_topk <- data.table(gene_id_A = gA[idx_t], gene_id_B = gB[idx_t],
                         abs_r = mean_abs_r[idx_t])
 stamp(paste("  Top-200 candidates per gene:", nrow(cand_topk)))
 
-# Union of both (removes duplicates)
-cand_all <- unique(
-  rbind(cand_global, cand_topk),
-  by = c("gene_id_A","gene_id_B")
-)
+# Union: cand_global covers abs_r >= 0.27; only keep top-200 pairs below that threshold.
+# data.table::unique(by=) uses GForce and segfaults on aarch64-darwin; use filter+rbind.
+topk_extra <- cand_topk[abs_r < 0.27]   # simple column filter — no GForce path
+cand_all   <- rbind(cand_global, topk_extra)
+rm(topk_extra)
 stamp(paste("  Union candidates:", nrow(cand_all)))
 
 # Free large base-R vectors before loading cor matrices
