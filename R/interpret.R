@@ -323,14 +323,18 @@ compute_preservation_fallback <- function(mod_input, network_list2,
 #'
 #' For each module, computes the mean intramodular edge weight per condition
 #' and identifies the condition with the highest activity. Also computes
-#' `delta_treatment` relative to Mock.
+#' `delta_treatment` relative to `ref_condition`.
 #'
 #' @param mod_input ModuleInput from [build_wgcna_modules()].
 #' @param network_list Named list of NetworkResult (one per condition).
+#' @param ref_condition Name of the reference condition used to compute
+#'   `delta_treatment`. Must be a name present in `network_list`. Default
+#'   `"Mock"` (preserves pathogen multiome behaviour). Set to the appropriate
+#'   baseline condition name for new datasets (e.g. `"Col-0"`, `"untreated"`).
 #' @return `mod_input` with `$module_meta$top_organ_or_condition` and
 #'   `$module_meta$delta_treatment` filled.
 #' @export
-annotate_context <- function(mod_input, network_list) {
+annotate_context <- function(mod_input, network_list, ref_condition = "Mock") {
   gene_mod    <- mod_input$gene_module
   conditions  <- names(network_list)
   unique_mods <- sort(unique(gene_mod$top_module[gene_mod$top_module > 0L]))
@@ -346,11 +350,11 @@ annotate_context <- function(mod_input, network_list) {
 
     top_cond <- conditions[which.max(cond_weights)]
 
-    mock_w <- cond_weights["Mock"]
-    delta_str <- if (!is.na(mock_w)) {
-      non_mock <- conditions[conditions != "Mock"]
-      parts    <- vapply(non_mock, function(cond)
-        sprintf("%s:%+.3f", cond, cond_weights[cond] - mock_w),
+    ref_w <- cond_weights[ref_condition]
+    delta_str <- if (!is.na(ref_w)) {
+      non_ref <- conditions[conditions != ref_condition]
+      parts   <- vapply(non_ref, function(cond)
+        sprintf("%s:%+.3f", cond, cond_weights[cond] - ref_w),
         character(1))
       paste(parts, collapse = ";")
     } else {

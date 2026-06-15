@@ -164,7 +164,7 @@ if (is.null(mod_input)) stop("Cannot proceed without module assignments.")
 
 message("\n=== Step 5: Annotation ===")
 tryCatch({
-  mod_input <- annotate_context(mod_input, network_list)
+  mod_input <- annotate_context(mod_input, network_list, ref_condition = "Mock")
   mod_input <- annotate_go(mod_input, org_db = "org.At.tair.db", pval_cut = 0.05)
 
   if (file.exists(TF_META_PATH)) {

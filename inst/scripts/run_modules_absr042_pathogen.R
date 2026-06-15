@@ -212,7 +212,7 @@ message("network_list_ctx sizes: ",
   mod_input$hub_genes   <- .add_symbol(mod_input$hub_genes)
 
   mod_input <- tryCatch(
-    annotate_context(mod_input, network_list_ctx),
+    annotate_context(mod_input, network_list_ctx, ref_condition = "Mock"),
     error = function(e) { message("  annotate_context failed: ", conditionMessage(e)); mod_input }
   )
 

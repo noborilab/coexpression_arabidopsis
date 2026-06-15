@@ -1,7 +1,7 @@
 ## Pathogen multiome — subcluster pseudobulk co-expression
 ##
 ## Mode: pooled single stratum (all 4 conditions combined)
-## Observations: ~298 sub_clst_rna_20260610 pseudobulk profiles
+## Observations: ~298 subclusters (GROUP_VAR; dataset-specific)
 ## Rationale: pseudobulk aggregation by subcluster recovers rare-population
 ##   co-expression that the cell-level GGM dilutes via full-universe conditioning.
 ##
@@ -29,7 +29,7 @@ SEURAT_PATH <- paste0(
 DATASET_ID   <- "pathogen_pseudobulk"
 
 # Pseudobulk grouping: each unique value → one pseudobulk observation
-GROUP_VAR    <- "sub_clst_rna_20260610"
+GROUP_VAR    <- "sub_clst_rna_20260610"  # dataset-specific: edit for new datasets
 
 # Assay / slot
 ASSAY <- "RNA"
@@ -279,7 +279,8 @@ message("symbol_map: ", nrow(symbol_map), " entries")
   # Condition context
   if (stratified) {
     # Stratified: use network edge weights per stratum (standard annotate_context)
-    mod_input <- tryCatch(annotate_context(mod_input, network_list),
+    mod_input <- tryCatch(annotate_context(mod_input, network_list,
+                                           ref_condition = "Mock"),
                           error = function(e) {
                             message("  context failed: ", conditionMessage(e))
                             mod_input

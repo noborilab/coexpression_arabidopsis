@@ -219,7 +219,7 @@ sym_lookup <- setNames(symbol_map$gene_symbol, symbol_map$gene_id)
 
   # 3a. Condition context
   mod_input <- tryCatch(
-    annotate_context(mod_input, network_list),
+    annotate_context(mod_input, network_list, ref_condition = "Mock"),
     error = function(e) {
       message("annotate_context failed: ", conditionMessage(e)); mod_input
     }
