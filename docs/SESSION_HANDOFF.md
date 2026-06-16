@@ -484,6 +484,40 @@ AT-ID.
 Apply going forward to all new analyses.
 
 
+## Core/Marker Co-detection Benchmark — 2026-06-16 (overnight)
+
+Single-cell co-detection benchmark: marker groups vs co-expression modules.
+Output root: `results/pathogen_multiome/core_marker/`
+
+### What this adds
+- **Co-detection engine** (`inst/scripts/codetection_eval.R`): reusable, generic
+  function `score_gene_group()` — accepts any gene group + sparse count/lognorm
+  matrix. Computes within-group co-detection rate + Spearman vs expression-
+  frequency-matched null (decile-binned). No prior-knowledge dependency.
+- **Benchmark** (Phase 2): all marker groups (major-cluster + immune-subcluster)
+  vs all 6 co-expression module sets on same single-cell matrix.
+  Output: `marker_vs_coexpr_codetection.csv`, `benchmark_summary.csv`,
+  `BENCHMARK_FINDINGS.md`.
+- **Core/mode-specific characterization** (Phase 3): expression character
+  (detection rate, mean expression) + marker overlap (hypergeometric) for the
+  1,095 core / 8,371 GGM-only / 4,048 PB-only gene sets.
+- **Immune subcluster case study** (Phase 4): per-subcluster marker-module
+  concentration analysis + PRIMER cell (subcluster 4) full readout
+  (`PRIMER_readout.csv`).
+- **UMAP feature plots** (Phase 5): module scores on UMAP for immune-relevant
+  modules, PRIMER module(s), and core vs mode-specific contrasts.
+- **Integrated HTML report**: `CORE_MARKER_REPORT.html` (self-contained).
+
+### Confound handling
+Matched-null controls for detection-rate confound: for each gene pair, null
+partner genes are drawn from the same expression-frequency decile. Only null-
+controlled effect sizes are used for cross-source comparison.
+
+### Analysis script
+`inst/scripts/core_marker_analysis.R` (sources codetection_eval.R; all phases).
+
+---
+
 ## Downstream Analysis Suite — 2026-06-16
 
 All downstream analyses complete. Output root: `results/pathogen_multiome/downstream/`
