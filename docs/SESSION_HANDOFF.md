@@ -482,3 +482,21 @@ AT-ID.
   parameterized for new datasets, same pattern as the BLOCKER-C fix).
 - Handle multi-symbol collisions deterministically; never fabricate symbols.
 Apply going forward to all new analyses.
+
+
+## Downstream Analysis Suite — 2026-06-16
+
+All downstream analyses complete. Output root: `results/pathogen_multiome/downstream/`
+
+### What now exists
+- **Topology** (A1-A3): degree distributions, power-law fits, centrality, global stats for all 6 networks
+- **Module quality** (B1-B4): kME distributions, eigengene correlations, hub genes, quality comparison across all 6 sets
+- **Cross-mode** (C1-C4): GGM vs pseudobulk Jaccard/ARI overlap, WGCNA vs Louvain ARI, core vs mode-specific gene partition, cross-set consistency
+- **Condition specificity** (D1-D2): per-mode activation tables and figures (GGM and pseudobulk separately; cross-mode comparison forbidden)
+- **Functional annotation** (E1-E2): GO BP enrichment per module (all sets), TF enrichment (reference only; modules not named)
+- **Gene-centric** (F1-F2): master gene lookup table + WRKY demo of generic gene-set query
+- **Integrated HTML report**: `DOWNSTREAM_ANALYSIS_REPORT.html` (self-contained, standalone)
+
+### Generic/reusable
+All analyses are dataset-agnostic. See Section 8 of the HTML report for reuse instructions.
+Analysis script: `inst/scripts/downstream_analysis.R`
